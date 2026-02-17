@@ -1,7 +1,7 @@
-require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
-const sqlite3 = require('sqlite3').verbose();
-const cron = require('node-cron');
+require("dotenv").config();
+const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes } = require("discord.js");
+const sqlite3 = require("sqlite3").verbose();
+const cron = require("node-cron");
 
 const client = new Client({
   intents: [
@@ -11,198 +11,147 @@ const client = new Client({
   ]
 });
 
-// ================= قاعدة البيانات =================
-const db = new sqlite3.Database('./voice.db');
+// ================= إعداداتك =================
+const ROOM_ID = "PUT_CHANNEL_ID_HERE"; // روم إرسال التوب
+const GUILD_ID = process.env.GUILD_ID;
+const TOKEN = process.env.TOKEN;
 
-// جدول المستخدمين
+// رولات كل ترتيب للكلي، الأسبوعي، الشهري
+const ROLE_TOTAL = ["ROLE_TOTAL_1","ROLE_TOTAL_2","ROLE_TOTAL_3","ROLE_TOTAL_4","ROLE_TOTAL_5"]; 
+const ROLE_WEEKLY = ["ROLE_WEEKLY_1","ROLE_WEEKLY_2","ROLE_WEEKLY_3"];
+const ROLE_MONTHLY = ["ROLE_MONTHLY_1","ROLE_MONTHLY_2"];
+
+const db = new sqlite3.Database("./voice.sqlite");
+
+// ================= إنشاء جدول المستخدمين =================
 db.run(`
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
+  userId TEXT PRIMARY KEY,
   total INTEGER DEFAULT 0,
   weekly INTEGER DEFAULT 0,
   monthly INTEGER DEFAULT 0
 )
 `);
 
-// جدول تخزين رسالة التوب
-db.run(`
-CREATE TABLE IF NOT EXISTS config (
-  key TEXT PRIMARY KEY,
-  value TEXT
-)
-`);
+let voiceTimes = {};
+let multiplier = 1;
 
-// ================= أدوات =================
-function formatTime(ms) {
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  return `${h || 0}h ${m || 0}m`;
-}
+// ================= تتبع الصوت =================
+client.on("voiceStateUpdate", (oldState, newState) => {
+  const userId = newState.id;
 
-function getConfig(key) {
-  return new Promise(resolve => {
-    db.get(`SELECT value FROM config WHERE key = ?`, [key], (err, row) => {
-      resolve(row ? row.value : null);
-    });
-  });
-}
+  if (!oldState.channelId && newState.channelId) voiceTimes[userId] = Date.now();
 
-function setConfig(key, value) {
-  db.run(`INSERT OR REPLACE INTO config(key,value) VALUES(?,?)`, [key, value]);
-}
+  if (oldState.channelId && !newState.channelId) {
+    if (!voiceTimes[userId]) return;
+    const duration = Math.floor((Date.now() - voiceTimes[userId]) / 60000) * multiplier;
+    delete voiceTimes[userId];
 
-// ================= إرسال / تحديث التوب =================
-async function sendTop() {
-  const channel = await client.channels.fetch(process.env.CHANNEL_ID);
-
-  const results = {};
-  results.total = await new Promise(res => db.all(
-    'SELECT * FROM users ORDER BY total DESC LIMIT 10',
-    (e, r) => res(r || [])
-  ));
-
-  results.weekly = await new Promise(res => db.all(
-    'SELECT * FROM users ORDER BY weekly DESC LIMIT 10',
-    (e, r) => res(r || [])
-  ));
-
-  results.monthly = await new Promise(res => db.all(
-    'SELECT * FROM users ORDER BY monthly DESC LIMIT 10',
-    (e, r) => res(r || [])
-  ));
-
-  function build(rows, type) {
-    if (!rows.length) return "لا يوجد بيانات";
-    return rows.map((r, i) => {
-      const ms = type === "total" ? r.total : type === "weekly" ? r.weekly : r.monthly;
-      return `**${i + 1}.** <@${r.id}> — ${formatTime(ms)}`;
-    }).join('\n');
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle("🏆 قائمة المتصدرين بالتواجد الصوتي")
-    .setColor("Gold")
-    .addFields(
-      { name: "💯 التوب الكلي", value: build(results.total, "total") },
-      { name: "📅 التوب الشهري", value: build(results.monthly, "monthly") },
-      { name: "📆 التوب الأسبوعي", value: build(results.weekly, "weekly") }
-    )
-    .setFooter({ text: "Voice System By Nay 👑" });
-
-  let messageId = await getConfig("topMessageId");
-
-  if (messageId) {
-    try {
-      const msg = await channel.messages.fetch(messageId);
-      await msg.edit({ embeds: [embed] });
-      return;
-    } catch {
-      console.log("⚠️ لم أجد الرسالة القديمة — سيتم إنشاء جديدة");
-    }
-  }
-
-  const msg = await channel.send({ embeds: [embed] });
-  setConfig("topMessageId", msg.id);
-}
-
-// ================= إضافة وقت يدوي =================
-function addTime(userId, type, minutes) {
-  const ms = minutes * 60 * 1000;
-
-  db.run(`INSERT OR IGNORE INTO users(id,total,weekly,monthly) VALUES(?,0,0,0)`, [userId]);
-
-  db.run(`
-    UPDATE users
-    SET ${type} = ${type} + ?
-    WHERE id = ?
-  `, [ms, userId], sendTop);
-}
-
-// ================= السلاش كوماند =================
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-
-  if (interaction.commandName === 'addtime') {
-
-    if (interaction.user.id !== process.env.OWNER_ID)
-      return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
-
-    const user = interaction.options.getUser('user');
-    const type = interaction.options.getString('type');
-    const minutes = interaction.options.getInteger('minutes');
-
-    addTime(user.id, type, minutes);
-
-    interaction.reply({
-      content: `✅ تمت إضافة ${minutes} دقيقة (${type}) لـ ${user.tag}`,
-      ephemeral: true
+    db.get(`SELECT * FROM users WHERE userId = ?`, [userId], (err, row) => {
+      if (!row) {
+        db.run(`INSERT INTO users (userId, total, weekly, monthly) VALUES (?, ?, ?, ?)`,
+          [userId, duration, duration, duration]);
+      } else {
+        db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE userId = ?`,
+          [duration, duration, duration, userId]);
+      }
     });
   }
 });
 
-// ================= عند تشغيل البوت =================
-client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
+// ================= إرسال التوب =================
+async function sendLeaderboard() {
+  const channel = client.channels.cache.get(ROOM_ID);
+  if (!channel) return;
 
-  // تسجيل الأمر
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('addtime')
-      .setDescription('إضافة وقت')
-      .addUserOption(o => o.setName('user').setDescription('الشخص').setRequired(true))
-      .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true)
-        .addChoices(
-          { name: 'total', value: 'total' },
-          { name: 'weekly', value: 'weekly' },
-          { name: 'monthly', value: 'monthly' }
-        ))
-      .addIntegerOption(o => o.setName('minutes').setDescription('الدقائق').setRequired(true))
-      .toJSON()
+  const guild = client.guilds.cache.get(GUILD_ID);
+
+  const types = [
+    { name: "🏆 التوب الكلي", dbCol: "total", roles: ROLE_TOTAL, limit: 10 },
+    { name: "🔥 التوب الأسبوعي", dbCol: "weekly", roles: ROLE_WEEKLY, limit: 10 },
+    { name: "📅 التوب الشهري", dbCol: "monthly", roles: ROLE_MONTHLY, limit: 10 },
   ];
 
-  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+  for (const type of types) {
+    db.all(`SELECT * FROM users ORDER BY ${type.dbCol} DESC LIMIT ${type.limit}`, async (err, rows) => {
+      const desc = rows.map((u,i) => `**${i+1}.** <@${u.userId}> — ${u[type.dbCol]} دقيقة`).join("\n") || "لا يوجد بيانات";
+      const embed = new EmbedBuilder().setTitle(type.name).setDescription(desc).setColor("Gold");
+      await channel.send({ embeds: [embed] });
 
-  await rest.put(
-    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-    { body: commands }
-  );
-
-  // تحديث الوقت كل 15 دقيقة
-  setInterval(async () => {
-    const guild = await client.guilds.fetch(process.env.GUILD_ID);
-    const members = guild.members.cache.filter(m => m.voice.channelId);
-    const increment = 10 * 60 * 1000;
-
-    members.forEach(member => {
-      db.run(`INSERT OR IGNORE INTO users(id,total,weekly,monthly) VALUES(?,0,0,0)`, [member.id]);
-
-      db.run(`
-        UPDATE users
-        SET total = total + ?, weekly = weekly + ?, monthly = monthly + ?
-        WHERE id = ?
-      `, [increment, increment, increment, member.id]);
+      // توزيع الرولات حسب ترتيب محدد
+      if (rows.length && type.roles.length) {
+        // شيل جميع رولات هذا النوع
+        guild.members.cache.forEach(m => {
+          type.roles.forEach(rid => { if (m.roles.cache.has(rid)) m.roles.remove(rid).catch(()=>{}); });
+        });
+        // أعط الرول للأوائل حسب ترتيبهم
+        rows.forEach(async (u,i) => {
+          if (type.roles[i]) {
+            const member = await guild.members.fetch(u.userId).catch(()=>null);
+            if (member) member.roles.add(type.roles[i]).catch(()=>{});
+          }
+        });
+      }
     });
+  }
+}
 
-    sendTop();
+// ================= سلاش كوماند =================
+const commands = [
+  new SlashCommandBuilder().setName("leaderboard").setDescription("إرسال التوب الآن"),
+  new SlashCommandBuilder().setName("rank").setDescription("معرفة ترتيب عضو").addUserOption(opt=>opt.setName("user").setDescription("العضو").setRequired(true)),
+  new SlashCommandBuilder().setName("multiply").setDescription("تشغيل مضاعفة النقاط").addIntegerOption(opt=>opt.setName("number").setDescription("الرقم").setRequired(true)),
+  new SlashCommandBuilder().setName("multiplyoff").setDescription("إيقاف المضاعفة")
+].map(cmd=>cmd.toJSON());
 
-  }, 15 * 60 * 1000);
+client.once("ready", async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
 
-  // إرسال أول مرة
-  sendTop();
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
+  await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
+
+  // تحديث التوب كل 15 دقيقة
+  setInterval(sendLeaderboard, 15*60*1000);
+  sendLeaderboard();
 });
 
-// ================= تصفيرات =================
+// ================= التفاعل مع السلاش =================
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) return;
 
-// الأسبوعي كل أحد
-cron.schedule('0 0 * * 0', () => {
-  db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 تصفير أسبوعي");
+  if (interaction.commandName === "leaderboard") {
+    await sendLeaderboard();
+    return interaction.reply({ content: "✅ تم الإرسال", ephemeral: true });
+  }
+
+  if (interaction.commandName === "rank") {
+    const user = interaction.options.getUser("user");
+    db.get(`SELECT * FROM users WHERE userId = ?`, [user.id], (err,row)=>{
+      if (!row) return interaction.reply("لا يوجد بيانات");
+      const embed = new EmbedBuilder()
+        .setTitle(`📊 ترتيب ${user.username}`)
+        .setDescription(`
+الكلي: ${row.total} دقيقة
+الأسبوعي: ${row.weekly} دقيقة
+الشهري: ${row.monthly} دقيقة
+        `);
+      interaction.reply({ embeds:[embed] });
+    });
+  }
+
+  if (interaction.commandName === "multiply") {
+    multiplier = interaction.options.getInteger("number");
+    interaction.reply(`✅ تم تشغيل المضاعفة ×${multiplier}`);
+  }
+
+  if (interaction.commandName === "multiplyoff") {
+    multiplier = 1;
+    interaction.reply("✅ تم إيقاف المضاعفة");
+  }
 });
 
-// الشهري بداية الشهر
-cron.schedule('0 0 1 * *', () => {
-  db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 تصفير شهري");
-});
+// ================= تصفير أسبوعي وشهري =================
+cron.schedule("0 0 * * 0", () => db.run(`UPDATE users SET weekly = 0`));
+cron.schedule("0 0 1 * *", () => db.run(`UPDATE users SET monthly = 0`));
 
-client.login(process.env.TOKEN);
+client.login(TOKEN);
