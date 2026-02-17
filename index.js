@@ -39,7 +39,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     db.get(`SELECT * FROM users WHERE id = ?`, [userId], (err, row) => {
       if (!row || !row.joinTime) return;
 
-      const diff = Date.now() - row.joinTime;
+      const diff = Date.now() - row.joinTime; // وقت التواجد
 
       db.run(`
         UPDATE users
@@ -83,7 +83,7 @@ async function sendTop() {
     });
   }
 
-  // دالة لبناء النص بالشكل المطلوب
+  // دوال بناء النصوص لكل قسم
   function buildDesc(rows) {
     if (!rows.length) return "لا يوجد بيانات";
     return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.total)}`).join('\n');
@@ -134,14 +134,18 @@ client.on('ready', () => {
   sendTop();
 });
 
-// تصفير أسبوعي
-cron.schedule('0 0 * * 0', () => {
+// ⚡ تصفير الأسبوعي كل دقيقة للتجربة
+cron.schedule('* * * * *', () => {
   db.run(`UPDATE users SET weekly = 0`);
+  console.log("🔄 تصفير الأسبوعي (تجربة)");
 });
 
-// تصفير شهري
-cron.schedule('0 0 1 * *', () => {
+// ⚡ تصفير الشهري كل دقيقتين للتجربة
+cron.schedule('*/2 * * * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
+  console.log("🔄 تصفير الشهري (تجربة)");
 });
+
+// الكلي يبقى دائمًا بدون تصفير
 
 client.login(process.env.TOKEN);
