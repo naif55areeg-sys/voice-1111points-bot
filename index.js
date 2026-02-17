@@ -2,6 +2,7 @@ require("dotenv").config();
 const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes } = require("discord.js");
 const sqlite3 = require("sqlite3").verbose();
 const cron = require("node-cron");
+const fs = require("fs");
 
 const client = new Client({
   intents: [
@@ -17,13 +18,13 @@ const GUILD_ID = process.env.GUILD_ID;
 const TOKEN = process.env.TOKEN;
 
 // رولات كل ترتيب للكلي، الأسبوعي، الشهري
-const ROLE_TOTAL = ["ROLE_TOTAL_1","ROLE_TOTAL_2","ROLE_TOTAL_3","ROLE_TOTAL_4","ROLE_TOTAL_5"]; 
+const ROLE_TOTAL = ["ROLE_TOTAL_1","ROLE_TOTAL_2","ROLE_TOTAL_3","ROLE_TOTAL_4","ROLE_TOTAL_5"];
 const ROLE_WEEKLY = ["ROLE_WEEKLY_1","ROLE_WEEKLY_2","ROLE_WEEKLY_3"];
 const ROLE_MONTHLY = ["ROLE_MONTHLY_1","ROLE_MONTHLY_2"];
 
+// ================= قاعدة البيانات =================
 const db = new sqlite3.Database("./voice.sqlite");
 
-// ================= إنشاء جدول المستخدمين =================
 db.run(`
 CREATE TABLE IF NOT EXISTS users (
   userId TEXT PRIMARY KEY,
@@ -32,6 +33,11 @@ CREATE TABLE IF NOT EXISTS users (
   monthly INTEGER DEFAULT 0
 )
 `);
+
+// ================= حفظ ID الرسالة =================
+const MSG_FILE = "./topMessage.json";
+function saveMessageId(id){ fs.writeFileSync(MSG_FILE, JSON.stringify({id})); }
+function getMessageId(){ if(!fs.existsSync(MSG_FILE)) return null; return JSON.parse(fs.readFileSync(MSG_FILE)).id; }
 
 let voiceTimes = {};
 let multiplier = 1;
@@ -44,55 +50,71 @@ client.on("voiceStateUpdate", (oldState, newState) => {
 
   if (oldState.channelId && !newState.channelId) {
     if (!voiceTimes[userId]) return;
-    const duration = Math.floor((Date.now() - voiceTimes[userId]) / 60000) * multiplier;
+    const duration = Math.floor((Date.now() - voiceTimes[userId])/60000) * multiplier;
     delete voiceTimes[userId];
 
-    db.get(`SELECT * FROM users WHERE userId = ?`, [userId], (err, row) => {
-      if (!row) {
-        db.run(`INSERT INTO users (userId, total, weekly, monthly) VALUES (?, ?, ?, ?)`,
-          [userId, duration, duration, duration]);
+    db.get(`SELECT * FROM users WHERE userId = ?`, [userId], (err,row)=>{
+      if(!row){
+        db.run(`INSERT INTO users(userId,total,weekly,monthly) VALUES(?,?,?,?)`,[userId,duration,duration,duration]);
       } else {
-        db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE userId = ?`,
-          [duration, duration, duration, userId]);
+        db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE userId = ?`,[duration,duration,duration,userId]);
       }
     });
   }
 });
 
-// ================= إرسال التوب =================
+// ================= إرسال Embed واحد =================
 async function sendLeaderboard() {
   const channel = client.channels.cache.get(ROOM_ID);
-  if (!channel) return;
-
+  if(!channel) return;
   const guild = client.guilds.cache.get(GUILD_ID);
 
   const types = [
-    { name: "🏆 التوب الكلي", dbCol: "total", roles: ROLE_TOTAL, limit: 10 },
-    { name: "🔥 التوب الأسبوعي", dbCol: "weekly", roles: ROLE_WEEKLY, limit: 10 },
-    { name: "📅 التوب الشهري", dbCol: "monthly", roles: ROLE_MONTHLY, limit: 10 },
+    { name:"🏆 التوب الكلي", col:"total", roles:ROLE_TOTAL, limit:10 },
+    { name:"🔥 التوب الأسبوعي", col:"weekly", roles:ROLE_WEEKLY, limit:10 },
+    { name:"📅 التوب الشهري", col:"monthly", roles:ROLE_MONTHLY, limit:10 }
   ];
 
-  for (const type of types) {
-    db.all(`SELECT * FROM users ORDER BY ${type.dbCol} DESC LIMIT ${type.limit}`, async (err, rows) => {
-      const desc = rows.map((u,i) => `**${i+1}.** <@${u.userId}> — ${u[type.dbCol]} دقيقة`).join("\n") || "لا يوجد بيانات";
-      const embed = new EmbedBuilder().setTitle(type.name).setDescription(desc).setColor("Gold");
-      await channel.send({ embeds: [embed] });
+  let embed = new EmbedBuilder().setTitle("📊 قائمة المتصدرين بالتواجد الصوتي").setColor("Gold");
 
-      // توزيع الرولات حسب ترتيب محدد
-      if (rows.length && type.roles.length) {
-        // شيل جميع رولات هذا النوع
-        guild.members.cache.forEach(m => {
-          type.roles.forEach(rid => { if (m.roles.cache.has(rid)) m.roles.remove(rid).catch(()=>{}); });
-        });
-        // أعط الرول للأوائل حسب ترتيبهم
-        rows.forEach(async (u,i) => {
-          if (type.roles[i]) {
-            const member = await guild.members.fetch(u.userId).catch(()=>null);
-            if (member) member.roles.add(type.roles[i]).catch(()=>{});
-          }
-        });
-      }
+  for(const type of types){
+    const rows = await new Promise((resolve,reject)=>{
+      db.all(`SELECT * FROM users ORDER BY ${type.col} DESC LIMIT ${type.limit}`,(err,r)=>err?reject(err):resolve(r||[]));
     });
+
+    const desc = rows.map((u,i)=>`**${i+1}.** <@${u.userId}> — ${u[type.col]} دقيقة`).join("\n")||"لا يوجد بيانات";
+    embed.addFields({name:type.name,value:desc,inline:false});
+
+    // توزيع الرولات
+    if(rows.length && type.roles.length){
+      // شيل جميع رولات هذا النوع
+      guild.members.cache.forEach(m=>{
+        type.roles.forEach(rid=>{ if(m.roles.cache.has(rid)) m.roles.remove(rid).catch(()=>{}); });
+      });
+      // أعط الرول للأوائل حسب ترتيبهم
+      rows.forEach(async(u,i)=>{
+        if(type.roles[i]){
+          const member = await guild.members.fetch(u.userId).catch(()=>null);
+          if(member) member.roles.add(type.roles[i]).catch(()=>{});
+        }
+      });
+    }
+  }
+
+  // تحديث نفس الرسالة أو إنشاء جديدة
+  let msgId = getMessageId();
+  if(msgId){
+    try{
+      const msg = await channel.messages.fetch(msgId);
+      await msg.edit({embeds:[embed]});
+      return;
+    }catch{
+      const msg = await channel.send({embeds:[embed]});
+      saveMessageId(msg.id);
+    }
+  } else {
+    const msg = await channel.send({embeds:[embed]});
+    saveMessageId(msg.id);
   }
 }
 
@@ -104,30 +126,29 @@ const commands = [
   new SlashCommandBuilder().setName("multiplyoff").setDescription("إيقاف المضاعفة")
 ].map(cmd=>cmd.toJSON());
 
-client.once("ready", async () => {
+client.once("ready",async()=>{
   console.log(`✅ Logged in as ${client.user.tag}`);
 
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
-  await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
+  const rest = new REST({version:"10"}).setToken(TOKEN);
+  await rest.put(Routes.applicationGuildCommands(client.user.id,GUILD_ID),{body:commands});
 
-  // تحديث التوب كل 15 دقيقة
-  setInterval(sendLeaderboard, 15*60*1000);
+  setInterval(sendLeaderboard,15*60*1000); // كل 15 دقيقة
   sendLeaderboard();
 });
 
 // ================= التفاعل مع السلاش =================
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+client.on("interactionCreate",async interaction=>{
+  if(!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "leaderboard") {
+  if(interaction.commandName==="leaderboard"){
     await sendLeaderboard();
-    return interaction.reply({ content: "✅ تم الإرسال", ephemeral: true });
+    return interaction.reply({content:"✅ تم الإرسال",ephemeral:true});
   }
 
-  if (interaction.commandName === "rank") {
+  if(interaction.commandName==="rank"){
     const user = interaction.options.getUser("user");
-    db.get(`SELECT * FROM users WHERE userId = ?`, [user.id], (err,row)=>{
-      if (!row) return interaction.reply("لا يوجد بيانات");
+    db.get(`SELECT * FROM users WHERE userId = ?`,[user.id],(err,row)=>{
+      if(!row) return interaction.reply("لا يوجد بيانات");
       const embed = new EmbedBuilder()
         .setTitle(`📊 ترتيب ${user.username}`)
         .setDescription(`
@@ -135,23 +156,23 @@ client.on("interactionCreate", async interaction => {
 الأسبوعي: ${row.weekly} دقيقة
 الشهري: ${row.monthly} دقيقة
         `);
-      interaction.reply({ embeds:[embed] });
+      interaction.reply({embeds:[embed]});
     });
   }
 
-  if (interaction.commandName === "multiply") {
+  if(interaction.commandName==="multiply"){
     multiplier = interaction.options.getInteger("number");
     interaction.reply(`✅ تم تشغيل المضاعفة ×${multiplier}`);
   }
 
-  if (interaction.commandName === "multiplyoff") {
+  if(interaction.commandName==="multiplyoff"){
     multiplier = 1;
     interaction.reply("✅ تم إيقاف المضاعفة");
   }
 });
 
 // ================= تصفير أسبوعي وشهري =================
-cron.schedule("0 0 * * 0", () => db.run(`UPDATE users SET weekly = 0`));
-cron.schedule("0 0 1 * *", () => db.run(`UPDATE users SET monthly = 0`));
+cron.schedule("0 0 * * 0",()=>db.run(`UPDATE users SET weekly = 0`));
+cron.schedule("0 0 1 * *",()=>db.run(`UPDATE users SET monthly = 0`));
 
 client.login(TOKEN);
