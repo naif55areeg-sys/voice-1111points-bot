@@ -12,7 +12,7 @@ const client = new Client({
 });
 
 // ================= إعداداتك =================
-const ROOM_ID = "PUT_CHANNEL_ID_HERE"; // روم إرسال التوب
+const ROOM_ID = "1461062092642717964"; // روم إرسال التوب
 const GUILD_ID = process.env.GUILD_ID;
 const TOKEN = process.env.TOKEN;
 
