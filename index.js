@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
+const fs = require('fs');
 
 const client = new Client({
   intents: [
@@ -11,7 +12,18 @@ const client = new Client({
   ]
 });
 
+// قاعدة البيانات
 const db = new sqlite3.Database('./voice.db');
+
+// ملف لتخزين ID الرسالة
+const messageFile = './topMessage.json';
+function saveTopMessageId(id) {
+  fs.writeFileSync(messageFile, JSON.stringify({ id }));
+}
+function getTopMessageId() {
+  if (!fs.existsSync(messageFile)) return null;
+  return JSON.parse(fs.readFileSync(messageFile)).id;
+}
 
 // إنشاء جدول المستخدمين
 db.run(`
@@ -24,18 +36,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 `);
 
-// ==== بيانات تجريبية تلقائية لمستخدمين للتجربة ====
-const testUsers = [
-  { id: "123456789012345678", total: 3600000, weekly: 1800000, monthly: 900000 }, // 1h, 30m, 15m
-  { id: "987654321098765432", total: 7200000, weekly: 3600000, monthly: 1800000 }  // 2h, 1h, 30m
-];
-
-testUsers.forEach(u => {
-  db.run(`INSERT OR IGNORE INTO users(id, total, weekly, monthly) VALUES(?, ?, ?, ?)`,
-    [u.id, u.total, u.weekly, u.monthly]);
-});
-
-// تسجيل دخول وخروج الرومات الصوتية
+// تسجيل الدخول والخروج من الرومات
 client.on('voiceStateUpdate', (oldState, newState) => {
   const userId = newState.id;
 
@@ -45,12 +46,11 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     db.run(`UPDATE users SET joinTime = ? WHERE id = ?`, [Date.now(), userId]);
   }
 
-  // خروج من روم
+  // خروج روم
   if (oldState.channelId && !newState.channelId) {
     db.get(`SELECT * FROM users WHERE id = ?`, [userId], (err, row) => {
       if (!row || !row.joinTime) return;
-
-      const diff = Date.now() - row.joinTime; // الوقت الذي قضاه المستخدم
+      const diff = Date.now() - row.joinTime;
 
       db.run(`
         UPDATE users
@@ -64,44 +64,38 @@ client.on('voiceStateUpdate', (oldState, newState) => {
   }
 });
 
-// تحويل الوقت من ms إلى h m
+// تحويل ms إلى h m
 function formatTime(ms) {
   const h = Math.floor(ms / 3600000);
   const m = Math.floor((ms % 3600000) / 60000);
   return `${h || 0}h ${m || 0}m`;
 }
 
-// ID الرسالة التي تتحدث تلقائياً
-let topMessageId = null;
-
+// تحديث Embed التوب
 async function sendTop() {
   const channel = await client.channels.fetch(process.env.CHANNEL_ID);
 
-  // جلب أفضل 10 لكل / شهري / أسبوعي
-  const queries = {
-    total: 'SELECT * FROM users ORDER BY total DESC LIMIT 10',
-    monthly: 'SELECT * FROM users ORDER BY monthly DESC LIMIT 10',
-    weekly: 'SELECT * FROM users ORDER BY weekly DESC LIMIT 10'
-  };
-
   const results = {};
-  for (const key in queries) {
-    results[key] = await new Promise((resolve, reject) => {
-      db.all(queries[key], (err, rows) => {
-        if (err) reject(err);
-        resolve(rows || []);
-      });
-    });
-  }
 
-  // دوال بناء النصوص
+  // الكلي أفضل 2
+  results.total = await new Promise((resolve, reject) => {
+    db.all('SELECT * FROM users ORDER BY total DESC LIMIT 2', (err, rows) => err ? reject(err) : resolve(rows || []));
+  });
+
+  // الأسبوعي أفضل 4
+  results.weekly = await new Promise((resolve, reject) => {
+    db.all('SELECT * FROM users ORDER BY weekly DESC LIMIT 4', (err, rows) => err ? reject(err) : resolve(rows || []));
+  });
+
+  // الشهري أفضل 5
+  results.monthly = await new Promise((resolve, reject) => {
+    db.all('SELECT * FROM users ORDER BY monthly DESC LIMIT 5', (err, rows) => err ? reject(err) : resolve(rows || []));
+  });
+
   function buildDesc(rows, type) {
     if (!rows.length) return "لا يوجد بيانات";
     return rows.map((r, i) => {
-      let ms = 0;
-      if (type === "total") ms = r.total;
-      else if (type === "monthly") ms = r.monthly;
-      else if (type === "weekly") ms = r.weekly;
+      let ms = type === "total" ? r.total : type === "monthly" ? r.monthly : r.weekly;
       return `**${i + 1}.** <@${r.id}> — ${formatTime(ms)}`;
     }).join('\n');
   }
@@ -116,43 +110,64 @@ async function sendTop() {
     )
     .setFooter({ text: "Voice System By Nay 👑" });
 
-  // تحديث الرسالة إذا موجودة، أو إنشاء رسالة جديدة
+  let topMessageId = getTopMessageId();
   if (topMessageId) {
     try {
       const msg = await channel.messages.fetch(topMessageId);
       await msg.edit({ embeds: [embed] });
+      return;
     } catch {
-      const msg = await channel.send({ embeds: [embed] });
-      topMessageId = msg.id;
+      console.log("لم أتمكن من تعديل الرسالة، سيتم إنشاء رسالة جديدة");
     }
-  } else {
-    const msg = await channel.send({ embeds: [embed] });
-    topMessageId = msg.id;
   }
+
+  const msg = await channel.send({ embeds: [embed] });
+  saveTopMessageId(msg.id);
 }
 
+// تشغيل عند الجاهزية
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // تحديث الرسالة كل ساعة
-  setInterval(sendTop, 60 * 60 * 1000);
+  // التوب الكلي يتم تحديثه كل 15 دقيقة
+  setInterval(async () => {
+    const guild = await client.guilds.fetch(process.env.GUILD_ID);
+    const members = guild.members.cache.filter(m => m.voice.channelId);
 
-  // تحديث فوري عند بدء التشغيل
+    const increment = 10 * 60 * 1000; // 10 دقائق
+    members.forEach(member => {
+      const userId = member.id;
+
+      db.run(`
+        INSERT OR IGNORE INTO users(id, total, weekly, monthly)
+        VALUES(?, 0, 0, 0)
+      `, [userId]);
+
+      db.run(`
+        UPDATE users
+        SET total = total + ?
+        WHERE id = ?
+      `, [increment, userId]);
+    });
+
+    sendTop();
+  }, 15 * 60 * 1000);
+
+  // تحديث فوري عند التشغيل
   sendTop();
 });
 
-// ==== تصفير الأسبوعي كل دقيقة للتجربة ====
-cron.schedule('* * * * *', () => {
+// ==== تصفير الأسبوعي كل أحد (الأسماء القديمة تختفي، يظهر الجدد حسب وقت الأسبوع الحالي) ====
+cron.schedule('0 0 * * 0', () => {
   db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 تصفير الأسبوعي (تجربة)");
+  console.log("🔄 تصفير الأسبوعي - بدأ أسبوع جديد");
 });
 
-// ==== تصفير الشهري كل دقيقتين للتجربة ====
-cron.schedule('*/2 * * * *', () => {
+// ==== تصفير الشهري أول يوم بالشهر (الأسماء القديمة تختفي، يظهر الجدد حسب وقت الشهر الحالي) ====
+cron.schedule('0 0 1 * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 تصفير الشهري (تجربة)");
+  console.log("🔄 تصفير الشهري - بدأ شهر جديد");
 });
 
-// الكلي يبقى دائمًا بدون تصفير
-
+// الكلي لا يتصفّر
 client.login(process.env.TOKEN);
