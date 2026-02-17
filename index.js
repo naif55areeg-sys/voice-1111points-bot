@@ -53,7 +53,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
   }
 });
 
-// تحويل الوقت من ms لـ h m
+// تحويل الوقت من ms إلى h m
 function formatTime(ms) {
   const h = Math.floor(ms / 3600000);
   const m = Math.floor((ms % 3600000) / 60000);
@@ -83,7 +83,7 @@ async function sendTop() {
     });
   }
 
-  // إنشاء النصوص بشكل مرتب
+  // دالة لبناء النص بالشكل المطلوب
   function buildDesc(rows) {
     if (!rows.length) return "لا يوجد بيانات";
     return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.total)}`).join('\n');
