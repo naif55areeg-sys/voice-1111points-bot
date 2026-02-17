@@ -2,23 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
-const express = require("express");
 
-const CHANNEL_ID = "1461062092642717964";
-
-/* ================== EXPRESS (حل مشكلة Railway) ================== */
-const app = express();
-
-app.get("/", (req, res) => {
-  res.send("Bot is alive and running!");
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Web server is listening on port ${PORT}`);
-});
-
-/* ================== DISCORD ================== */
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -29,156 +13,135 @@ const client = new Client({
 
 const db = new sqlite3.Database('./voice.db');
 
+// إنشاء جدول المستخدمين
 db.run(`
 CREATE TABLE IF NOT EXISTS users (
-  user_id TEXT PRIMARY KEY,
-  all_time INTEGER DEFAULT 0,
+  id TEXT PRIMARY KEY,
+  total INTEGER DEFAULT 0,
+  weekly INTEGER DEFAULT 0,
   monthly INTEGER DEFAULT 0,
-  weekly INTEGER DEFAULT 0
+  joinTime INTEGER
 )
 `);
 
-const voiceTimes = new Map();
-
-/* ================== VOICE TRACK ================== */
+// تسجيل دخول وخروج الرومات الصوتية
 client.on('voiceStateUpdate', (oldState, newState) => {
   const userId = newState.id;
-  const now = Date.now();
 
-  // دخل الروم
-  if (!oldState.channel && newState.channel) {
-    voiceTimes.set(userId, now);
-  } 
-  // خرج من الروم
-  else if (oldState.channel && !newState.channel) {
-    const start = voiceTimes.get(userId);
-    if (!start) return;
+  // دخول روم
+  if (!oldState.channelId && newState.channelId) {
+    db.run(`INSERT OR IGNORE INTO users(id, joinTime) VALUES(?, ?)`, [userId, Date.now()]);
+    db.run(`UPDATE users SET joinTime = ? WHERE id = ?`, [Date.now(), userId]);
+  }
 
-    const minutes = Math.floor((now - start) / 60000);
+  // خروج من روم
+  if (oldState.channelId && !newState.channelId) {
+    db.get(`SELECT * FROM users WHERE id = ?`, [userId], (err, row) => {
+      if (!row || !row.joinTime) return;
 
-    // تحديث الوقت
-    db.run(`
-      UPDATE users SET
-        all_time = all_time + ?,
-        monthly = monthly + ?,
-        weekly = weekly + ?
-      WHERE user_id = ?
-    `, [minutes, minutes, minutes, userId]);
+      const diff = Date.now() - row.joinTime;
 
-    // إذا المستخدم جديد ضيفه
-    db.run(`
-      INSERT OR IGNORE INTO users (user_id, all_time, monthly, weekly)
-      VALUES (?, 0, 0, 0)
-    `, [userId]);
-
-    voiceTimes.delete(userId);
-  } 
-  // نقل بين الرومات
-  else if (oldState.channel && newState.channel && oldState.channel.id !== newState.channel.id) {
-    const start = voiceTimes.get(userId);
-    if (!start) return;
-
-    const minutes = Math.floor((now - start) / 60000);
-
-    db.run(`
-      UPDATE users SET
-        all_time = all_time + ?,
-        monthly = monthly + ?,
-        weekly = weekly + ?
-      WHERE user_id = ?
-    `, [minutes, minutes, minutes, userId]);
-
-    voiceTimes.set(userId, now);
+      db.run(`
+        UPDATE users
+        SET total = total + ?,
+            weekly = weekly + ?,
+            monthly = monthly + ?,
+            joinTime = NULL
+        WHERE id = ?
+      `, [diff, diff, diff, userId]);
+    });
   }
 });
 
-/* ================== FUNCTIONS ================== */
-function formatTime(minutes) {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
+// تحويل الوقت من ms لـ h m
+function formatTime(ms) {
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
   return `${h}h ${m}m`;
 }
 
-function getTimeLeft(type) {
-  const now = new Date();
-  const target = new Date();
+// ID الرسالة اللي تتحدث تلقائياً
+let topMessageId = null;
 
-  if (type === "week") {
-    target.setDate(now.getDate() + (7 - now.getDay()));
-  } else if (type === "month") {
-    target.setMonth(now.getMonth() + 1);
-    target.setDate(1);
-  }
+async function sendTop() {
+  const channel = await client.channels.fetch(process.env.CHANNEL_ID);
 
-  target.setHours(0,0,0,0);
+  // جلب أفضل 10 لكل / شهري / أسبوعي
+  const queries = {
+    total: 'SELECT * FROM users ORDER BY total DESC LIMIT 10',
+    monthly: 'SELECT * FROM users ORDER BY monthly DESC LIMIT 10',
+    weekly: 'SELECT * FROM users ORDER BY weekly DESC LIMIT 10'
+  };
 
-  const diff = target - now;
-  const d = Math.floor(diff / (1000*60*60*24));
-  const h = Math.floor((diff / (1000*60*60)) % 24);
-  const m = Math.floor((diff / (1000*60)) % 60);
-
-  return `${d}d ${h}h ${m}m`;
-}
-
-/* ================== COMMAND ================== */
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== 'top') return;
-
-  db.all(`SELECT * FROM users ORDER BY all_time DESC LIMIT 10`, (err, allRows) => {
-    db.all(`SELECT * FROM users ORDER BY monthly DESC LIMIT 10`, (err2, monthRows) => {
-      db.all(`SELECT * FROM users ORDER BY weekly DESC LIMIT 10`, async (err3, weekRows) => {
-
-        let desc = `🏆 **توب الكل (لا يتم تصفيرهم)**\n\n`;
-
-        if (allRows) allRows.forEach((u, i) => {
-          desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.all_time)}\n`;
-        });
-
-        desc += `\n🥇 **التوب الشهري**\n\n`;
-        if (monthRows) monthRows.forEach((u, i) => {
-          desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.monthly)}\n`;
-        });
-
-        desc += `\n📅 **التوب الأسبوعي**\n\n`;
-        if (weekRows) weekRows.forEach((u, i) => {
-          desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.weekly)}\n`;
-        });
-
-        desc += `\n\n♻ إعادة الضبط الأسبوعي بعد: ${getTimeLeft("week")}`;
-        desc += `\n♻ إعادة الضبط الشهري بعد: ${getTimeLeft("month")}`;
-
-        const embed = new EmbedBuilder()
-          .setColor("#6a0dad")
-          .setTitle("قائمة المتصدرين بالتواجد الصوتي 🏆")
-          .setDescription(desc)
-          .setFooter({ text: "Voice System By Nay 👑" });
-
-        try {
-          const channel = await client.channels.fetch(CHANNEL_ID);
-          if (channel) channel.send({ embeds: [embed] });
-
-          interaction.reply({
-            content: "تم إرسال القائمة في الروم المحدد ✅",
-            ephemeral: true
-          });
-        } catch (e) {
-          console.error("Error sending embed:", e);
-        }
-
+  const results = {};
+  for (const key in queries) {
+    results[key] = await new Promise((resolve, reject) => {
+      db.all(queries[key], (err, rows) => {
+        if (err) reject(err);
+        resolve(rows || []);
       });
     });
-  });
+  }
+
+  // إنشاء النصوص بشكل مرتب
+  function buildDesc(rows) {
+    if (!rows.length) return "لا يوجد بيانات";
+    return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.total)}`).join('\n');
+  }
+
+  function buildDescMonthly(rows) {
+    if (!rows.length) return "لا يوجد بيانات";
+    return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.monthly)}`).join('\n');
+  }
+
+  function buildDescWeekly(rows) {
+    if (!rows.length) return "لا يوجد بيانات";
+    return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.weekly)}`).join('\n');
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle("🏆 قائمة المتصدرين بالتواجد الصوتي")
+    .setColor("Gold")
+    .addFields(
+      { name: "💯 التوب الكلي", value: buildDesc(results.total), inline: false },
+      { name: "📅 التوب الشهري", value: buildDescMonthly(results.monthly), inline: false },
+      { name: "📆 التوب الأسبوعي", value: buildDescWeekly(results.weekly), inline: false }
+    )
+    .setFooter({ text: "Voice System By Nay 👑" });
+
+  // تحديث الرسالة إذا موجودة، أو إنشاء رسالة جديدة
+  if (topMessageId) {
+    try {
+      const msg = await channel.messages.fetch(topMessageId);
+      await msg.edit({ embeds: [embed] });
+    } catch {
+      const msg = await channel.send({ embeds: [embed] });
+      topMessageId = msg.id;
+    }
+  } else {
+    const msg = await channel.send({ embeds: [embed] });
+    topMessageId = msg.id;
+  }
+}
+
+client.on('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+
+  // تحديث الرسالة كل ساعة
+  setInterval(sendTop, 60 * 60 * 1000);
+
+  // تحديث فوري عند بدء التشغيل
+  sendTop();
 });
 
-/* ================== RESET ================== */
+// تصفير أسبوعي
 cron.schedule('0 0 * * 0', () => {
   db.run(`UPDATE users SET weekly = 0`);
-}, { timezone: "Asia/Riyadh" });
+});
 
+// تصفير شهري
 cron.schedule('0 0 1 * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
-}, { timezone: "Asia/Riyadh" });
+});
 
-/* ================== LOGIN ================== */
 client.login(process.env.TOKEN);
