@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const fs = require('fs');
@@ -17,13 +17,8 @@ const db = new sqlite3.Database('./voice.db');
 
 // ملف لتخزين ID الرسالة
 const messageFile = './topMessage.json';
-function saveTopMessageId(id) {
-  fs.writeFileSync(messageFile, JSON.stringify({ id }));
-}
-function getTopMessageId() {
-  if (!fs.existsSync(messageFile)) return null;
-  return JSON.parse(fs.readFileSync(messageFile)).id;
-}
+function saveTopMessageId(id) { fs.writeFileSync(messageFile, JSON.stringify({ id })); }
+function getTopMessageId() { if (!fs.existsSync(messageFile)) return null; return JSON.parse(fs.readFileSync(messageFile)).id; }
 
 // إنشاء جدول المستخدمين
 db.run(`
@@ -45,7 +40,6 @@ function formatTime(ms) {
 // تحديث Embed التوب
 async function sendTop() {
   const channel = await client.channels.fetch(process.env.CHANNEL_ID);
-
   const results = {};
 
   results.total = await new Promise((resolve, reject) => {
@@ -93,7 +87,7 @@ async function sendTop() {
   saveTopMessageId(msg.id);
 }
 
-// دالة لإضافة وقت لأي شخص يدويًا (مكافأة)
+// دالة لإضافة وقت لأي شخص
 function addTime(userId, type, minutes) {
   const ms = minutes * 60 * 1000;
   let column;
@@ -106,45 +100,78 @@ function addTime(userId, type, minutes) {
   db.run(`UPDATE users SET ${column} = ${column} + ? WHERE id = ?`, [ms, userId], () => sendTop());
 }
 
-// تشغيل عند الجاهزية
-client.on('ready', () => {
+// === إعداد السلاش كوماند مع حماية ID ===
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'addtime') {
+    const allowedId = process.env.OWNER_ID; // ضع ID حسابك هنا
+    if (interaction.user.id !== allowedId) {
+      return interaction.reply({ content: "❌ ما عندك صلاحية لتعديل الوقت!", ephemeral: true });
+    }
+
+    const user = interaction.options.getUser('user');
+    const type = interaction.options.getString('type'); // total, weekly, monthly
+    const minutes = interaction.options.getInteger('minutes');
+
+    addTime(user.id, type, minutes);
+    await interaction.reply({ content: `✅ تم إضافة ${minutes} دقيقة لـ ${type} للشخص ${user.tag}`, ephemeral: true });
+  }
+});
+
+// تسجيل السلاش كوماند عند التشغيل
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // تحديث الكلي + الأسبوعي + الشهري كل 15 دقيقة (يمكن تغييره لكل دقيقة للتجربة)
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('addtime')
+      .setDescription('إضافة وقت لشخص للكلي/الأسبوعي/الشهري')
+      .addUserOption(option => option.setName('user').setDescription('اختر الشخص').setRequired(true))
+      .addStringOption(option => option.setName('type').setDescription('النوع').setRequired(true).addChoices(
+        { name: 'total', value: 'total' },
+        { name: 'weekly', value: 'weekly' },
+        { name: 'monthly', value: 'monthly' }
+      ))
+      .addIntegerOption(option => option.setName('minutes').setDescription('عدد الدقائق').setRequired(true))
+      .toJSON()
+  ];
+
+  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+  await rest.put(
+    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+    { body: commands },
+  );
+
+  // تحديث الكلي + الأسبوعي + الشهري كل 15 دقيقة
   setInterval(async () => {
     const guild = await client.guilds.fetch(process.env.GUILD_ID);
     const members = guild.members.cache.filter(m => m.voice.channelId);
+    const increment = 10 * 60 * 1000; // 10 دقائق
 
-    const increment = 10 * 60 * 1000; // 10 دقائق → للتجربة ضع 1 * 60 * 1000 = دقيقة
     members.forEach(member => {
       const userId = member.id;
-
       db.run(`INSERT OR IGNORE INTO users(id, total, weekly, monthly) VALUES(?,0,0,0)`, [userId]);
       db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE id = ?`,
         [increment, increment, increment, userId]);
     });
 
     sendTop();
-  }, 1 * 60 * 1000); // كل 15 دقيقة
+  }, 15 * 60 * 1000);
 
-  sendTop(); // تحديث فوري عند التشغيل
+  sendTop();
 });
 
-// ==== تصفير الأسبوعي كل أحد ====
+// تصفير الأسبوعي كل أحد
 cron.schedule('0 0 * * 0', () => {
   db.run(`UPDATE users SET weekly = 0`);
   console.log("🔄 تصفير الأسبوعي - بدأ أسبوع جديد");
 });
 
-// ==== تصفير الشهري أول يوم بالشهر ====
+// تصفير الشهري أول يوم بالشهر
 cron.schedule('0 0 1 * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
   console.log("🔄 تصفير الشهري - بدأ شهر جديد");
 });
 
 client.login(process.env.TOKEN);
-
-// مثال استخدام دالة إضافة وقت:
-// addTime('USER_ID', 'total', 30); // تضيف 30 دقيقة للكلي
-// addTime('USER_ID', 'weekly', 15); // تضيف 15 دقيقة للأسبوعي
-// addTime('USER_ID', 'monthly', 60); // تضيف 60 دقيقة للشهري
