@@ -13,7 +13,8 @@ const client = new Client({
 });
 
 // ================= قاعدة البيانات =================
-const db = new sqlite3.Database('./voice.db');
+const DB_PATH = process.env.DB_PATH || './voice.db';
+const db = new sqlite3.Database(DB_PATH);
 
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
