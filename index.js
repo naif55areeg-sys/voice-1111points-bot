@@ -24,6 +24,17 @@ CREATE TABLE IF NOT EXISTS users (
 )
 `);
 
+// ==== بيانات تجريبية تلقائية لمستخدمين للتجربة ====
+const testUsers = [
+  { id: "123456789012345678", total: 3600000, weekly: 1800000, monthly: 900000 }, // 1h, 30m, 15m
+  { id: "987654321098765432", total: 7200000, weekly: 3600000, monthly: 1800000 }  // 2h, 1h, 30m
+];
+
+testUsers.forEach(u => {
+  db.run(`INSERT OR IGNORE INTO users(id, total, weekly, monthly) VALUES(?, ?, ?, ?)`,
+    [u.id, u.total, u.weekly, u.monthly]);
+});
+
 // تسجيل دخول وخروج الرومات الصوتية
 client.on('voiceStateUpdate', (oldState, newState) => {
   const userId = newState.id;
@@ -39,7 +50,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     db.get(`SELECT * FROM users WHERE id = ?`, [userId], (err, row) => {
       if (!row || !row.joinTime) return;
 
-      const diff = Date.now() - row.joinTime; // وقت التواجد
+      const diff = Date.now() - row.joinTime; // الوقت الذي قضاه المستخدم
 
       db.run(`
         UPDATE users
@@ -57,10 +68,10 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 function formatTime(ms) {
   const h = Math.floor(ms / 3600000);
   const m = Math.floor((ms % 3600000) / 60000);
-  return `${h}h ${m}m`;
+  return `${h || 0}h ${m || 0}m`;
 }
 
-// ID الرسالة اللي تتحدث تلقائياً
+// ID الرسالة التي تتحدث تلقائياً
 let topMessageId = null;
 
 async function sendTop() {
@@ -83,29 +94,25 @@ async function sendTop() {
     });
   }
 
-  // دوال بناء النصوص لكل قسم
-  function buildDesc(rows) {
+  // دوال بناء النصوص
+  function buildDesc(rows, type) {
     if (!rows.length) return "لا يوجد بيانات";
-    return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.total)}`).join('\n');
-  }
-
-  function buildDescMonthly(rows) {
-    if (!rows.length) return "لا يوجد بيانات";
-    return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.monthly)}`).join('\n');
-  }
-
-  function buildDescWeekly(rows) {
-    if (!rows.length) return "لا يوجد بيانات";
-    return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r.weekly)}`).join('\n');
+    return rows.map((r, i) => {
+      let ms = 0;
+      if (type === "total") ms = r.total;
+      else if (type === "monthly") ms = r.monthly;
+      else if (type === "weekly") ms = r.weekly;
+      return `**${i + 1}.** <@${r.id}> — ${formatTime(ms)}`;
+    }).join('\n');
   }
 
   const embed = new EmbedBuilder()
     .setTitle("🏆 قائمة المتصدرين بالتواجد الصوتي")
     .setColor("Gold")
     .addFields(
-      { name: "💯 التوب الكلي", value: buildDesc(results.total), inline: false },
-      { name: "📅 التوب الشهري", value: buildDescMonthly(results.monthly), inline: false },
-      { name: "📆 التوب الأسبوعي", value: buildDescWeekly(results.weekly), inline: false }
+      { name: "💯 التوب الكلي", value: buildDesc(results.total, "total"), inline: false },
+      { name: "📅 التوب الشهري", value: buildDesc(results.monthly, "monthly"), inline: false },
+      { name: "📆 التوب الأسبوعي", value: buildDesc(results.weekly, "weekly"), inline: false }
     )
     .setFooter({ text: "Voice System By Nay 👑" });
 
@@ -134,13 +141,13 @@ client.on('ready', () => {
   sendTop();
 });
 
-// ⚡ تصفير الأسبوعي كل دقيقة للتجربة
+// ==== تصفير الأسبوعي كل دقيقة للتجربة ====
 cron.schedule('* * * * *', () => {
   db.run(`UPDATE users SET weekly = 0`);
   console.log("🔄 تصفير الأسبوعي (تجربة)");
 });
 
-// ⚡ تصفير الشهري كل دقيقتين للتجربة
+// ==== تصفير الشهري كل دقيقتين للتجربة ====
 cron.schedule('*/2 * * * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
   console.log("🔄 تصفير الشهري (تجربة)");
