@@ -10,12 +10,13 @@ const CHANNEL_ID = "1461062092642717964";
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("Bot is running");
+  res.send("Bot is alive and running!");
 });
 
+// التعديل الجوهري هنا: إضافة '0.0.0.0' لفتح الشبكة للمنصة
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Web server running");
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Web server is listening on port ${PORT}`);
 });
 
 /* ================== DISCORD ================== */
@@ -28,6 +29,7 @@ const client = new Client({
   ]
 });
 
+// ملاحظة: ملف voice.db سيحذف عند كل ريستارت في ريلواي إلا لو ربطت Volume
 const db = new sqlite3.Database('./voice.db');
 
 db.run(`
@@ -130,21 +132,27 @@ client.on('interactionCreate', async interaction => {
 
         let desc = `🏆 **توب الكل (لا يتم تصفيرهم)**\n\n`;
 
-        allRows.forEach((u, i) => {
-          desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.all_time)}\n`;
-        });
+        if (allRows) {
+            allRows.forEach((u, i) => {
+              desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.all_time)}\n`;
+            });
+        }
 
         desc += `\n🥇 **التوب الشهري**\n\n`;
 
-        monthRows.forEach((u, i) => {
-          desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.monthly)}\n`;
-        });
+        if (monthRows) {
+            monthRows.forEach((u, i) => {
+              desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.monthly)}\n`;
+            });
+        }
 
         desc += `\n📅 **التوب الأسبوعي**\n\n`;
 
-        weekRows.forEach((u, i) => {
-          desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.weekly)}\n`;
-        });
+        if (weekRows) {
+            weekRows.forEach((u, i) => {
+              desc += `\`${i+1}.\` <@${u.user_id}> — ${formatTime(u.weekly)}\n`;
+            });
+        }
 
         desc += `\n\n♻ إعادة الضبط الأسبوعي بعد: ${getTimeLeft("week")}`;
         desc += `\n♻ إعادة الضبط الشهري بعد: ${getTimeLeft("month")}`;
@@ -155,13 +163,17 @@ client.on('interactionCreate', async interaction => {
           .setDescription(desc)
           .setFooter({ text: "Voice System By Nay 👑" });
 
-        const channel = await client.channels.fetch(CHANNEL_ID);
-        channel.send({ embeds: [embed] });
+        try {
+            const channel = await client.channels.fetch(CHANNEL_ID);
+            if (channel) channel.send({ embeds: [embed] });
 
-        interaction.reply({
-          content: "تم إرسال القائمة في الروم المحدد ✅",
-          ephemeral: true
-        });
+            interaction.reply({
+              content: "تم إرسال القائمة في الروم المحدد ✅",
+              ephemeral: true
+            });
+        } catch (e) {
+            console.error("Error sending embed:", e);
+        }
 
       });
     });
