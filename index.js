@@ -130,43 +130,43 @@ client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 
   // التوب الكلي يتم تحديثه كل 15 دقيقة
-  setInterval(async () => {
-    const guild = await client.guilds.fetch(process.env.GUILD_ID);
-    const members = guild.members.cache.filter(m => m.voice.channelId);
+setInterval(async () => {
+  const guild = await client.guilds.fetch(process.env.GUILD_ID);
+  const members = guild.members.cache.filter(m => m.voice.channelId);
 
-    const increment = 10 * 60 * 1000; // 10 دقائق
-    members.forEach(member => {
-      const userId = member.id;
+  const increment = 1 * 60 * 1000; // 1 دقيقة بدلاً من 10 دقائق
+  members.forEach(member => {
+    const userId = member.id;
 
-      db.run(`
-        INSERT OR IGNORE INTO users(id, total, weekly, monthly)
-        VALUES(?, 0, 0, 0)
-      `, [userId]);
+    db.run(`
+      INSERT OR IGNORE INTO users(id, total, weekly, monthly)
+      VALUES(?, 0, 0, 0)
+    `, [userId]);
 
-      db.run(`
-        UPDATE users
-        SET total = total + ?
+    db.run(`
+      UPDATE users
+      SET total = total + ?
         WHERE id = ?
-      `, [increment, userId]);
-    });
+    `, [increment, userId]);
+  });
 
-    sendTop();
-  }, 15 * 60 * 1000);
+  sendTop();
+}, 1 * 60 * 1000); // كل دقيقة بدلاً من 15 دقيقة
 
   // تحديث فوري عند التشغيل
   sendTop();
 });
 
-// ==== تصفير الأسبوعي كل أحد (الأسماء القديمة تختفي، يظهر الجدد حسب وقت الأسبوع الحالي) ====
-cron.schedule('0 0 * * 0', () => {
+// الأسبوعي → كل 2 دقيقة للتجربة
+cron.schedule('*/2 * * * *', () => {
   db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 تصفير الأسبوعي - بدأ أسبوع جديد");
+  console.log("🔄 تصفير الأسبوعي - تجربة");
 });
 
-// ==== تصفير الشهري أول يوم بالشهر (الأسماء القديمة تختفي، يظهر الجدد حسب وقت الشهر الحالي) ====
-cron.schedule('0 0 1 * *', () => {
+// الشهري → كل 3 دقائق للتجربة
+cron.schedule('*/3 * * * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 تصفير الشهري - بدأ شهر جديد");
+  console.log("🔄 تصفير الشهري - تجربة");
 });
 
 // الكلي لا يتصفّر
