@@ -49,15 +49,15 @@ async function sendTop() {
   const results = {};
 
   results.total = await new Promise((resolve, reject) => {
-    db.all('SELECT * FROM users ORDER BY total DESC LIMIT 2', (err, rows) => err ? reject(err) : resolve(rows || []));
+    db.all('SELECT * FROM users ORDER BY total DESC LIMIT 10', (err, rows) => err ? reject(err) : resolve(rows || []));
   });
 
   results.weekly = await new Promise((resolve, reject) => {
-    db.all('SELECT * FROM users ORDER BY weekly DESC LIMIT 4', (err, rows) => err ? reject(err) : resolve(rows || []));
+    db.all('SELECT * FROM users ORDER BY weekly DESC LIMIT 10', (err, rows) => err ? reject(err) : resolve(rows || []));
   });
 
   results.monthly = await new Promise((resolve, reject) => {
-    db.all('SELECT * FROM users ORDER BY monthly DESC LIMIT 5', (err, rows) => err ? reject(err) : resolve(rows || []));
+    db.all('SELECT * FROM users ORDER BY monthly DESC LIMIT 10', (err, rows) => err ? reject(err) : resolve(rows || []));
   });
 
   function buildDesc(rows, type) {
@@ -93,49 +93,58 @@ async function sendTop() {
   saveTopMessageId(msg.id);
 }
 
+// دالة لإضافة وقت لأي شخص يدويًا (مكافأة)
+function addTime(userId, type, minutes) {
+  const ms = minutes * 60 * 1000;
+  let column;
+  if (type === 'total') column = 'total';
+  else if (type === 'weekly') column = 'weekly';
+  else if (type === 'monthly') column = 'monthly';
+  else return;
+
+  db.run(`INSERT OR IGNORE INTO users(id, total, weekly, monthly) VALUES(?,0,0,0)`, [userId]);
+  db.run(`UPDATE users SET ${column} = ${column} + ? WHERE id = ?`, [ms, userId], () => sendTop());
+}
+
 // تشغيل عند الجاهزية
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // تحديث الكلي + الأسبوعي + الشهري كل دقيقة للتجربة
+  // تحديث الكلي + الأسبوعي + الشهري كل 15 دقيقة (يمكن تغييره لكل دقيقة للتجربة)
   setInterval(async () => {
     const guild = await client.guilds.fetch(process.env.GUILD_ID);
     const members = guild.members.cache.filter(m => m.voice.channelId);
 
-    const increment = 1 * 60 * 1000; // 1 دقيقة للتجربة
+    const increment = 10 * 60 * 1000; // 10 دقائق → للتجربة ضع 1 * 60 * 1000 = دقيقة
     members.forEach(member => {
       const userId = member.id;
 
-      db.run(`
-        INSERT OR IGNORE INTO users(id, total, weekly, monthly)
-        VALUES(?, 0, 0, 0)
-      `, [userId]);
-
-      db.run(`
-        UPDATE users
-        SET total = total + ?,
-            weekly = weekly + ?,
-            monthly = monthly + ?
-        WHERE id = ?
-      `, [increment, increment, increment, userId]);
+      db.run(`INSERT OR IGNORE INTO users(id, total, weekly, monthly) VALUES(?,0,0,0)`, [userId]);
+      db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE id = ?`,
+        [increment, increment, increment, userId]);
     });
 
-    sendTop(); // تحديث Embed
-  }, 1 * 60 * 1000); // كل دقيقة
+    sendTop();
+  }, 15 * 60 * 1000); // كل 15 دقيقة
 
   sendTop(); // تحديث فوري عند التشغيل
 });
 
-// ==== تصفير الأسبوعي كل 2 دقيقة للتجربة ====
-cron.schedule('*/2 * * * *', () => {
+// ==== تصفير الأسبوعي كل أحد ====
+cron.schedule('0 0 * * 0', () => {
   db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 تصفير الأسبوعي - تجربة");
+  console.log("🔄 تصفير الأسبوعي - بدأ أسبوع جديد");
 });
 
-// ==== تصفير الشهري كل 3 دقائق للتجربة ====
-cron.schedule('*/3 * * * *', () => {
+// ==== تصفير الشهري أول يوم بالشهر ====
+cron.schedule('0 0 1 * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 تصفير الشهري - تجربة");
+  console.log("🔄 تصفير الشهري - بدأ شهر جديد");
 });
 
 client.login(process.env.TOKEN);
+
+// مثال استخدام دالة إضافة وقت:
+// addTime('USER_ID', 'total', 30); // تضيف 30 دقيقة للكلي
+// addTime('USER_ID', 'weekly', 15); // تضيف 15 دقيقة للأسبوعي
+// addTime('USER_ID', 'monthly', 60); // تضيف 60 دقيقة للشهري
