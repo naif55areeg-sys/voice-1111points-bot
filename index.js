@@ -3,6 +3,8 @@ const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 
+const CHANNEL_ID = "1461062092642717964";
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -26,26 +28,34 @@ const voiceTimes = new Map();
 client.on('voiceStateUpdate', (oldState, newState) => {
   const userId = newState.id;
 
+  // دخل روم
   if (!oldState.channel && newState.channel) {
     voiceTimes.set(userId, Date.now());
+    return;
   }
 
-  if (oldState.channel && !newState.channel) {
+  // خرج او نقل
+  if (oldState.channel) {
     const start = voiceTimes.get(userId);
     if (!start) return;
 
     const minutes = Math.floor((Date.now() - start) / 60000);
 
     db.run(`
-    INSERT INTO users (user_id, all_time, monthly, weekly)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET
-    all_time = all_time + ?,
-    monthly = monthly + ?,
-    weekly = weekly + ?
+      INSERT INTO users (user_id, all_time, monthly, weekly)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+      all_time = all_time + ?,
+      monthly = monthly + ?,
+      weekly = weekly + ?
     `, [userId, minutes, minutes, minutes, minutes, minutes, minutes]);
 
     voiceTimes.delete(userId);
+  }
+
+  // لو نقل لروم جديد
+  if (newState.channel) {
+    voiceTimes.set(userId, Date.now());
   }
 });
 
@@ -114,19 +124,32 @@ client.on('interactionCreate', async interaction => {
           .setDescription(desc)
           .setFooter({ text: "Voice System By Nay 👑" });
 
-        interaction.reply({ embeds: [embed] });
+        // ارسال في الروم المحدد
+        const channel = await client.channels.fetch(CHANNEL_ID);
+        channel.send({ embeds: [embed] });
+
+        // رد مخفي للشخص
+        interaction.reply({
+          content: "تم إرسال القائمة في الروم المحدد ✅",
+          ephemeral: true
+        });
+
       });
     });
   });
 });
 
-// تصفير تلقائي
+// تصفير تلقائي بتوقيت السعودية
 cron.schedule('0 0 * * 0', () => {
   db.run(`UPDATE users SET weekly = 0`);
+}, {
+  timezone: "Asia/Riyadh"
 });
 
 cron.schedule('0 0 1 * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
+}, {
+  timezone: "Asia/Riyadh"
 });
 
 client.login(process.env.TOKEN);
