@@ -2,8 +2,23 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
+const express = require("express");
 
 const CHANNEL_ID = "1461062092642717964";
+
+/* ================== EXPRESS (حل مشكلة Railway) ================== */
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("Bot is running");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Web server running");
+});
+
+/* ================== DISCORD ================== */
 
 const client = new Client({
   intents: [
@@ -20,17 +35,24 @@ CREATE TABLE IF NOT EXISTS users (
   user_id TEXT PRIMARY KEY,
   all_time INTEGER DEFAULT 0,
   monthly INTEGER DEFAULT 0,
-  weekly INTEGER DEFAULT 0
+  weekly INTEGER DEFAULT 0,
+  join_time INTEGER DEFAULT NULL
 )`);
 
 const voiceTimes = new Map();
+
+/* ================== VOICE TRACK ================== */
 
 client.on('voiceStateUpdate', (oldState, newState) => {
   const userId = newState.id;
 
   // دخل روم
   if (!oldState.channel && newState.channel) {
-    voiceTimes.set(userId, Date.now());
+    const now = Date.now();
+    voiceTimes.set(userId, now);
+
+    db.run(`INSERT OR REPLACE INTO users (user_id, join_time)
+            VALUES (?, ?)`, [userId, now]);
     return;
   }
 
@@ -47,7 +69,8 @@ client.on('voiceStateUpdate', (oldState, newState) => {
       ON CONFLICT(user_id) DO UPDATE SET
       all_time = all_time + ?,
       monthly = monthly + ?,
-      weekly = weekly + ?
+      weekly = weekly + ?,
+      join_time = NULL
     `, [userId, minutes, minutes, minutes, minutes, minutes, minutes]);
 
     voiceTimes.delete(userId);
@@ -55,9 +78,15 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 
   // لو نقل لروم جديد
   if (newState.channel) {
-    voiceTimes.set(userId, Date.now());
+    const now = Date.now();
+    voiceTimes.set(userId, now);
+
+    db.run(`UPDATE users SET join_time = ? WHERE user_id = ?`,
+      [now, userId]);
   }
 });
+
+/* ================== FUNCTIONS ================== */
 
 function formatTime(minutes) {
   const h = Math.floor(minutes / 60);
@@ -88,6 +117,8 @@ function getTimeLeft(type) {
 
   return `${d}d ${h}h ${m}m`;
 }
+
+/* ================== COMMAND ================== */
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -124,11 +155,9 @@ client.on('interactionCreate', async interaction => {
           .setDescription(desc)
           .setFooter({ text: "Voice System By Nay 👑" });
 
-        // ارسال في الروم المحدد
         const channel = await client.channels.fetch(CHANNEL_ID);
         channel.send({ embeds: [embed] });
 
-        // رد مخفي للشخص
         interaction.reply({
           content: "تم إرسال القائمة في الروم المحدد ✅",
           ephemeral: true
@@ -139,17 +168,16 @@ client.on('interactionCreate', async interaction => {
   });
 });
 
-// تصفير تلقائي بتوقيت السعودية
+/* ================== RESET ================== */
+
 cron.schedule('0 0 * * 0', () => {
   db.run(`UPDATE users SET weekly = 0`);
-}, {
-  timezone: "Asia/Riyadh"
-});
+}, { timezone: "Asia/Riyadh" });
 
 cron.schedule('0 0 1 * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
-}, {
-  timezone: "Asia/Riyadh"
-});
+}, { timezone: "Asia/Riyadh" });
+
+/* ================== LOGIN ================== */
 
 client.login(process.env.TOKEN);
