@@ -16,15 +16,15 @@ const client = new Client({
 const ROOM_ID = "1461062092642717964"; // روم إرسال التوب
 const GUILD_ID = process.env.GUILD_ID;
 const TOKEN = process.env.TOKEN;
+const OWNER_ID = process.env.OWNER_ID; // ID الشخص اللي يقدر يستخدم /addtime
 
-// رولات كل ترتيب للكلي، الأسبوعي، الشهري
+// رولات لكل ترتيب
 const ROLE_TOTAL = ["ROLE_TOTAL_1","ROLE_TOTAL_2","ROLE_TOTAL_3","ROLE_TOTAL_4","ROLE_TOTAL_5"];
 const ROLE_WEEKLY = ["ROLE_WEEKLY_1","ROLE_WEEKLY_2","ROLE_WEEKLY_3"];
 const ROLE_MONTHLY = ["ROLE_MONTHLY_1","ROLE_MONTHLY_2"];
 
 // ================= قاعدة البيانات =================
 const db = new sqlite3.Database("./voice.sqlite");
-
 db.run(`
 CREATE TABLE IF NOT EXISTS users (
   userId TEXT PRIMARY KEY,
@@ -123,7 +123,15 @@ const commands = [
   new SlashCommandBuilder().setName("leaderboard").setDescription("إرسال التوب الآن"),
   new SlashCommandBuilder().setName("rank").setDescription("معرفة ترتيب عضو").addUserOption(opt=>opt.setName("user").setDescription("العضو").setRequired(true)),
   new SlashCommandBuilder().setName("multiply").setDescription("تشغيل مضاعفة النقاط").addIntegerOption(opt=>opt.setName("number").setDescription("الرقم").setRequired(true)),
-  new SlashCommandBuilder().setName("multiplyoff").setDescription("إيقاف المضاعفة")
+  new SlashCommandBuilder().setName("multiplyoff").setDescription("إيقاف المضاعفة"),
+  new SlashCommandBuilder().setName("addtime").setDescription("إضافة وقت لشخص للكلي/الأسبوعي/الشهري")
+    .addUserOption(opt=>opt.setName("user").setDescription("اختر الشخص").setRequired(true))
+    .addStringOption(opt=>opt.setName("type").setDescription("النوع").setRequired(true).addChoices(
+      {name:"total",value:"total"},
+      {name:"weekly",value:"weekly"},
+      {name:"monthly",value:"monthly"}
+    ))
+    .addIntegerOption(opt=>opt.setName("minutes").setDescription("عدد الدقائق").setRequired(true))
 ].map(cmd=>cmd.toJSON());
 
 client.once("ready",async()=>{
@@ -168,6 +176,20 @@ client.on("interactionCreate",async interaction=>{
   if(interaction.commandName==="multiplyoff"){
     multiplier = 1;
     interaction.reply("✅ تم إيقاف المضاعفة");
+  }
+
+  if(interaction.commandName==="addtime"){
+    if(interaction.user.id !== OWNER_ID) return interaction.reply({content:"❌ ما عندك صلاحية لتعديل الوقت!",ephemeral:true});
+    
+    const user = interaction.options.getUser("user");
+    const type = interaction.options.getString("type");
+    const minutes = interaction.options.getInteger("minutes");
+    const ms = minutes * 60 * 1000;
+
+    db.run(`INSERT OR IGNORE INTO users(userId,total,weekly,monthly) VALUES(?,?,?,?)`, [user.id,0,0,0]);
+    db.run(`UPDATE users SET ${type} = ${type} + ? WHERE userId = ?`, [ms, user.id], () => sendLeaderboard());
+
+    interaction.reply({content:`✅ تم إضافة ${minutes} دقيقة لـ ${type} للشخص ${user.tag}`, ephemeral:true});
   }
 });
 
