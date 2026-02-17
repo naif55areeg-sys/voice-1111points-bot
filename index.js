@@ -46,7 +46,10 @@ function setConfig(key, value) {
   db.run(`INSERT OR REPLACE INTO config(key,value) VALUES(?,?)`, [key, value]);
 }
 
-// ================= إرسال / تحديث التوب =================
+// ================= متغير لمرة المنشن =================
+let mentionSent = false;
+
+// ================= تحديث / إرسال التوب =================
 async function sendTop() {
   const channel = await client.channels.fetch(process.env.CHANNEL_ID);
 
@@ -63,13 +66,28 @@ async function sendTop() {
     }).join('\n');
   }
 
+  // ================= حالة المضاعفة + منشن ذكي =================
+  let multiplierFieldValue = "";
+  if (multiplierActive) {
+    if (!mentionSent) {
+      multiplierFieldValue = `✅ مضاعفة مفعلة x${multiplierValue}\n@everyone`;
+      mentionSent = true; // منشن يتم مرة واحدة فقط
+    } else {
+      multiplierFieldValue = `✅ مضاعفة مفعلة x${multiplierValue}`;
+    }
+  } else {
+    multiplierFieldValue = "❌ مضاعفة متوقفة";
+    mentionSent = false; // إعادة تعيين عند إيقاف المضاعفة
+  }
+
   const embed = new EmbedBuilder()
     .setTitle("🏆 قائمة المتصدرين بالتواجد الصوتي")
     .setColor("Gold")
     .addFields(
       { name: "💯 التوب الكلي", value: build(results.total, "total") },
       { name: "📅 التوب الشهري", value: build(results.monthly, "monthly") },
-      { name: "📆 التوب الأسبوعي", value: build(results.weekly, "weekly") }
+      { name: "📆 التوب الأسبوعي", value: build(results.weekly, "weekly") },
+      { name: "⚡ حالة المضاعفة", value: multiplierFieldValue }
     )
     .setFooter({ text: "Voice System By Nay 👑" });
 
