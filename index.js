@@ -13,11 +13,7 @@ const client = new Client({
 });
 
 // ================= قاعدة البيانات =================
-const DB_PATH = process.env.DB_PATH || './voice.db';
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) console.error("❌ خطأ في فتح قاعدة البيانات:", err.message);
-  else console.log("✅ قاعدة البيانات جاهزة:", DB_PATH);
-});
+const db = new sqlite3.Database('./voice.db');
 
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -110,7 +106,6 @@ async function sendTop() {
   const msg = await channel.send({ embeds: [embed] });
   setConfig("topMessageId", msg.id);
 }
-
 // ================= إضافة وقت يدوي =================
 function addTime(userId, type, minutes) {
   const ms = minutes * 60 * 1000;
@@ -241,7 +236,7 @@ setInterval(async () => {
 // ================= تحديث التوب كل 5 دقائق =================
 setInterval(() => {
   sendTop();
-}, 1 * 60 * 1000); // كل 5 دقائق
+}, 5 * 60 * 1000); // كل 5 دقائق
 
 // ================= تصفيرات =================
 cron.schedule('0 0 * * 0', () => { // الأسبوعي كل أحد
@@ -256,3 +251,4 @@ cron.schedule('0 0 1 * *', () => { // الشهري بداية الشهر
 
 // ================= تشغيل البوت =================
 client.login(process.env.TOKEN);
+
