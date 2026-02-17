@@ -48,17 +48,14 @@ async function sendTop() {
 
   const results = {};
 
-  // الكلي أفضل 2
   results.total = await new Promise((resolve, reject) => {
     db.all('SELECT * FROM users ORDER BY total DESC LIMIT 2', (err, rows) => err ? reject(err) : resolve(rows || []));
   });
 
-  // الأسبوعي أفضل 4
   results.weekly = await new Promise((resolve, reject) => {
     db.all('SELECT * FROM users ORDER BY weekly DESC LIMIT 4', (err, rows) => err ? reject(err) : resolve(rows || []));
   });
 
-  // الشهري أفضل 5
   results.monthly = await new Promise((resolve, reject) => {
     db.all('SELECT * FROM users ORDER BY monthly DESC LIMIT 5', (err, rows) => err ? reject(err) : resolve(rows || []));
   });
@@ -100,12 +97,12 @@ async function sendTop() {
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // حساب الوقت لكل شخص موجود في الروم كل 15 دقيقة (لتجربة يمكن تغييره لدقيقة واحدة)
+  // تحديث الكلي + الأسبوعي + الشهري كل دقيقة للتجربة
   setInterval(async () => {
     const guild = await client.guilds.fetch(process.env.GUILD_ID);
     const members = guild.members.cache.filter(m => m.voice.channelId);
 
-    const increment = 10 * 60 * 1000; // 10 دقائق → للتجربة ضع 1 * 60 * 1000
+    const increment = 1 * 60 * 1000; // 1 دقيقة للتجربة
     members.forEach(member => {
       const userId = member.id;
 
@@ -124,23 +121,21 @@ client.on('ready', () => {
     });
 
     sendTop(); // تحديث Embed
-  }, 15 * 60 * 1000); // كل 15 دقيقة
+  }, 1 * 60 * 1000); // كل دقيقة
 
-  // تحديث فوري عند التشغيل
-  sendTop();
+  sendTop(); // تحديث فوري عند التشغيل
 });
 
-// ==== تصفير الأسبوعي كل أحد ====
-cron.schedule('0 0 * * 0', () => {
+// ==== تصفير الأسبوعي كل 2 دقيقة للتجربة ====
+cron.schedule('*/2 * * * *', () => {
   db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 تصفير الأسبوعي - بدأ أسبوع جديد");
+  console.log("🔄 تصفير الأسبوعي - تجربة");
 });
 
-// ==== تصفير الشهري أول يوم بالشهر ====
-cron.schedule('0 0 1 * *', () => {
+// ==== تصفير الشهري كل 3 دقائق للتجربة ====
+cron.schedule('*/3 * * * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 تصفير الشهري - بدأ شهر جديد");
+  console.log("🔄 تصفير الشهري - تجربة");
 });
 
-// الكلي لا يتصفّر
 client.login(process.env.TOKEN);
