@@ -31,38 +31,9 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   total INTEGER DEFAULT 0,
   weekly INTEGER DEFAULT 0,
-  monthly INTEGER DEFAULT 0,
-  joinTime INTEGER
+  monthly INTEGER DEFAULT 0
 )
 `);
-
-// تسجيل الدخول والخروج من الرومات
-client.on('voiceStateUpdate', (oldState, newState) => {
-  const userId = newState.id;
-
-  // دخول روم
-  if (!oldState.channelId && newState.channelId) {
-    db.run(`INSERT OR IGNORE INTO users(id, joinTime) VALUES(?, ?)`, [userId, Date.now()]);
-    db.run(`UPDATE users SET joinTime = ? WHERE id = ?`, [Date.now(), userId]);
-  }
-
-  // خروج روم
-  if (oldState.channelId && !newState.channelId) {
-    db.get(`SELECT * FROM users WHERE id = ?`, [userId], (err, row) => {
-      if (!row || !row.joinTime) return;
-      const diff = Date.now() - row.joinTime;
-
-      db.run(`
-        UPDATE users
-        SET total = total + ?,
-            weekly = weekly + ?,
-            monthly = monthly + ?,
-            joinTime = NULL
-        WHERE id = ?
-      `, [diff, diff, diff, userId]);
-    });
-  }
-});
 
 // تحويل ms إلى h m
 function formatTime(ms) {
@@ -129,44 +100,46 @@ async function sendTop() {
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // التوب الكلي يتم تحديثه كل 15 دقيقة
-setInterval(async () => {
-  const guild = await client.guilds.fetch(process.env.GUILD_ID);
-  const members = guild.members.cache.filter(m => m.voice.channelId);
+  // حساب الوقت لكل شخص موجود في الروم كل 15 دقيقة (لتجربة يمكن تغييره لدقيقة واحدة)
+  setInterval(async () => {
+    const guild = await client.guilds.fetch(process.env.GUILD_ID);
+    const members = guild.members.cache.filter(m => m.voice.channelId);
 
-  const increment = 1 * 60 * 1000; // 1 دقيقة بدلاً من 10 دقائق
-  members.forEach(member => {
-    const userId = member.id;
+    const increment = 10 * 60 * 1000; // 10 دقائق → للتجربة ضع 1 * 60 * 1000
+    members.forEach(member => {
+      const userId = member.id;
 
-    db.run(`
-      INSERT OR IGNORE INTO users(id, total, weekly, monthly)
-      VALUES(?, 0, 0, 0)
-    `, [userId]);
+      db.run(`
+        INSERT OR IGNORE INTO users(id, total, weekly, monthly)
+        VALUES(?, 0, 0, 0)
+      `, [userId]);
 
-    db.run(`
-      UPDATE users
-      SET total = total + ?
+      db.run(`
+        UPDATE users
+        SET total = total + ?,
+            weekly = weekly + ?,
+            monthly = monthly + ?
         WHERE id = ?
-    `, [increment, userId]);
-  });
+      `, [increment, increment, increment, userId]);
+    });
 
-  sendTop();
-}, 1 * 60 * 1000); // كل دقيقة بدلاً من 15 دقيقة
+    sendTop(); // تحديث Embed
+  }, 15 * 60 * 1000); // كل 15 دقيقة
 
   // تحديث فوري عند التشغيل
   sendTop();
 });
 
-// الأسبوعي → كل 2 دقيقة للتجربة
-cron.schedule('*/2 * * * *', () => {
+// ==== تصفير الأسبوعي كل أحد ====
+cron.schedule('0 0 * * 0', () => {
   db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 تصفير الأسبوعي - تجربة");
+  console.log("🔄 تصفير الأسبوعي - بدأ أسبوع جديد");
 });
 
-// الشهري → كل 3 دقائق للتجربة
-cron.schedule('*/3 * * * *', () => {
+// ==== تصفير الشهري أول يوم بالشهر ====
+cron.schedule('0 0 1 * *', () => {
   db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 تصفير الشهري - تجربة");
+  console.log("🔄 تصفير الشهري - بدأ شهر جديد");
 });
 
 // الكلي لا يتصفّر
