@@ -14,7 +14,10 @@ const client = new Client({
 
 // ================= قاعدة البيانات =================
 const DB_PATH = process.env.DB_PATH || './voice.db';
-const db = new sqlite3.Database(DB_PATH);
+const db = new sqlite3.Database(DB_PATH, (err) => {
+  if (err) console.error("❌ خطأ في فتح قاعدة البيانات:", err.message);
+  else console.log("✅ قاعدة البيانات جاهزة:", DB_PATH);
+});
 
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
