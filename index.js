@@ -116,13 +116,12 @@ function addTime(userId, type, minutes) {
 
 // ================= مضاعفة النقاط =================
 let multiplierActive = false;
-let multiplierValue = 2;
+let multiplierValue = 3; // كل دقيقة تصبح 3 دقائق عند تفعيل المضاعفة
 
 // ================= أوامر السلاش =================
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  // ===== /addtime =====
   if (interaction.commandName === 'addtime') {
     if (interaction.user.id !== process.env.OWNER_ID)
       return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
@@ -139,7 +138,6 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ===== /rank =====
   if (interaction.commandName === 'rank') {
     const userId = interaction.user.id;
     db.all('SELECT id, total FROM users ORDER BY total DESC', [], (err, rows) => {
@@ -157,7 +155,6 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
-  // ===== /multiplier =====
   if (interaction.commandName === 'multiplier') {
     if (!process.env.MULTI_USERS.split(',').includes(interaction.user.id))
       return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
@@ -166,7 +163,6 @@ client.on('interactionCreate', async interaction => {
     interaction.reply({ content: `✅ تم تفعيل مضاعفة النقاط x${multiplierValue}`, ephemeral: true });
   }
 
-  // ===== /stopmultiplier =====
   if (interaction.commandName === 'stopmultiplier') {
     if (!process.env.MULTI_USERS.split(',').includes(interaction.user.id))
       return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
@@ -216,16 +212,17 @@ client.once('ready', async () => {
     { body: commands }
   );
 
-  // إرسال أول مرة
+  // إرسال التوب لأول مرة
   sendTop();
 });
 
-// ================= تحديث الوقت مع المضاعفة =================
+// ================= إضافة الوقت كل دقيقة =================
 setInterval(async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID);
   const members = guild.members.cache.filter(m => m.voice.channelId);
-  let increment = 10 * 60 * 1000;
-  if (multiplierActive) increment *= multiplierValue;
+
+  let increment = 1 * 60 * 1000; // دقيقة واحدة
+  if (multiplierActive) increment *= multiplierValue; // 3 دقائق عند المضاعفة
 
   members.forEach(member => {
     db.run(`INSERT OR IGNORE INTO users(id,total,weekly,monthly) VALUES(?,0,0,0)`, [member.id]);
@@ -235,9 +232,12 @@ setInterval(async () => {
       WHERE id = ?
     `, [increment, increment, increment, member.id]);
   });
+}, 1 * 60 * 1000); // كل دقيقة
 
+// ================= تحديث التوب كل 5 دقائق =================
+setInterval(() => {
   sendTop();
-}, 15 * 60 * 1000);
+}, 5 * 60 * 1000); // كل 5 دقائق
 
 // ================= تصفيرات =================
 cron.schedule('0 0 * * 0', () => { // الأسبوعي كل أحد
