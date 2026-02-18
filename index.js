@@ -122,8 +122,11 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'addtime') {
-    if (interaction.user.id !== process.env.OWNER_ID)
-      return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
+   const owners = process.env.OWNER_IDS.split(',').map(id => id.trim());
+
+if (!owners.includes(interaction.user.id)) {
+  return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
+}
 
     const user = interaction.options.getUser('user');
     const type = interaction.options.getString('type');
