@@ -21,9 +21,11 @@ db.serialize(() => {
 
 // ================= أدوات التنسيق والبيانات =================
 function formatTime(ms) {
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  return `${h || 0}h ${m || 0}m`;
+  const isNegative = ms < 0;
+  const absMs = Math.abs(ms);
+  const h = Math.floor(absMs / 3600000);
+  const m = Math.floor((absMs % 3600000) / 60000);
+  return `${isNegative ? '-' : ''}${h || 0}h ${m || 0}m`;
 }
 
 function getConfig(key) {
@@ -82,18 +84,34 @@ async function sendTop() {
   setConfig("topMessageId", newMsg.id);
 }
 
-// ================= وظيفة إرسال لوحة الشرف (التكريم) =================
+// ================= إضافة/نقص وقت يدوي (تم التحديث لدعم خيار الكل) =================
+function modifyTime(userId, type, minutes, isAddition = true) {
+  const ms = minutes * 60 * 1000;
+  const operator = isAddition ? '+' : '-';
+  db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [userId]);
+
+  if (type === 'all') {
+    db.run(`UPDATE users SET total = total ${operator} ?, weekly = weekly ${operator} ?, monthly = monthly ${operator} ? WHERE id = ?`, [ms, ms, ms, userId], () => {
+      sendTop();
+    });
+  } else {
+    db.run(`UPDATE users SET ${type} = ${type} ${operator} ? WHERE id = ?`, [ms, userId], () => {
+      sendTop();
+    });
+  }
+}
+
+// ================= وظيفة إرسال لوحة الشرف =================
 async function sendHonorRoll(type) { 
   const channelId = process.env.CHANNEL_ID;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) return;
 
   const rows = await new Promise(res => db.all(`SELECT * FROM users WHERE ${type} > 0 ORDER BY ${type} DESC LIMIT 5`, (e, r) => res(r || [])));
-  if (rows.length === 0) return console.log(`No data to record for ${type} honor roll.`);
+  if (rows.length === 0) return;
 
   const title = type === 'weekly' ? "🌟 نجوم الأسبوع الماضي" : "💎 أساطير الشهر الماضي";
   const configKey = type === 'weekly' ? "lastWeeklyMsgId" : "lastMonthlyMsgId";
-
   const list = rows.map((r, i) => `**#${i + 1}** <@${r.id}> — ${formatTime(r[type])}`).join('\n');
 
   const embed = new EmbedBuilder()
@@ -118,23 +136,29 @@ client.on('interactionCreate', async interaction => {
   const owners = (process.env.OWNER_IDS || "").split(',').map(id => id.trim());
   const multiUsers = (process.env.MULTI_USERS || "").split(',').map(id => id.trim());
 
-  if (interaction.commandName === 'rank') {
-    db.get('SELECT * FROM users WHERE id = ?', [interaction.user.id], (err, row) => {
-      if (!row) return interaction.reply({ content: "❌ ليس لديك بيانات بعد، ادخل الرومات الصوتية أولاً!", ephemeral: true });
-      interaction.reply({ 
-        content: `🏅 ترتيبك الكلي ومجموع وقتك:\n⏱️ الوقت: **${formatTime(row.total)}**`, 
-        ephemeral: true 
-      });
-    });
+  if (interaction.commandName === 'addtime') {
+    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
+    const user = interaction.options.getUser('user');
+    const type = interaction.options.getString('type');
+    const minutes = interaction.options.getInteger('minutes');
+    modifyTime(user.id, type, minutes, true);
+    return interaction.reply({ content: `✅ تمت إضافة ${minutes} دقيقة (${type}) لـ ${user.tag}`, ephemeral: true });
   }
 
-  // أمر التجربة الجديد لرؤية لوحة الشرف فوراً
-  if (interaction.commandName === 'test_honor') {
-    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ للأونر فقط", ephemeral: true });
-    await interaction.deferReply({ ephemeral: true });
-    await sendHonorRoll('weekly');
-    await sendHonorRoll('monthly');
-    await interaction.editReply({ content: "✅ تم تحديث/إرسال لوحات الشرف بنجاح أسفل التوب الرئيسي." });
+  if (interaction.commandName === 'removetime') {
+    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
+    const user = interaction.options.getUser('user');
+    const type = interaction.options.getString('type');
+    const minutes = interaction.options.getInteger('minutes');
+    modifyTime(user.id, type, minutes, false);
+    return interaction.reply({ content: `📉 تم خصم ${minutes} دقيقة (${type}) من ${user.tag}`, ephemeral: true });
+  }
+
+  if (interaction.commandName === 'rank') {
+    db.get('SELECT * FROM users WHERE id = ?', [interaction.user.id], (err, row) => {
+      if (!row) return interaction.reply({ content: "❌ لا توجد بيانات لك بعد.", ephemeral: true });
+      interaction.reply({ content: `⏱️ مجموع وقتك الكلي: **${formatTime(row.total)}**`, ephemeral: true });
+    });
   }
 
   if (interaction.commandName === 'multiplier') {
@@ -150,25 +174,47 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ content: "✅ تم إيقاف المضاعفة", ephemeral: true });
     sendTop();
   }
+
+  if (interaction.commandName === 'test_honor') {
+    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ للأونر فقط", ephemeral: true });
+    await sendHonorRoll('weekly');
+    await sendHonorRoll('monthly');
+    await interaction.reply({ content: "✅ تم تحديث لوحات الشرف.", ephemeral: true });
+  }
 });
 
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-  const commands = [
-    new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك وتواجدك'),
-    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل مضاعفة النقاط'),
-    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف مضاعفة النقاط'),
-    new SlashCommandBuilder().setName('test_honor').setDescription('تجربة إرسال لوحة الشرف (للأونر)')
+  
+  // الخيارات المتاحة في الأوامر (تم إضافة خيار الكل هنا)
+  const choices = [
+    { name: 'الكل (كلي + شهري + أسبوعي)', value: 'all' },
+    { name: 'التوب الكلي فقط', value: 'total' }, 
+    { name: 'التوب الأسبوعي فقط', value: 'weekly' }, 
+    { name: 'التوب الشهري فقط', value: 'monthly' }
   ];
+  
+  const commands = [
+    new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك'),
+    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل المضاعفة'),
+    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف المضاعفة'),
+    new SlashCommandBuilder().setName('test_honor').setDescription('تجربة لوحة الشرف'),
+    new SlashCommandBuilder().setName('addtime').setDescription('زيادة وقت لشخص')
+      .addUserOption(o => o.setName('user').setDescription('الشخص').setRequired(true))
+      .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true).addChoices(...choices))
+      .addIntegerOption(o => o.setName('minutes').setDescription('الدقائق').setRequired(true)),
+    new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت من شخص')
+      .addUserOption(o => o.setName('user').setDescription('الشخص').setRequired(true))
+      .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true).addChoices(...choices))
+      .addIntegerOption(o => o.setName('minutes').setDescription('الدقائق').setRequired(true))
+  ];
+
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-  try {
-    await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
-    console.log("✅ Commands registered.");
-  } catch (e) { console.error(e); }
+  await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
   sendTop();
 });
 
-// ================= نظام احتساب الوقت والجدولة =================
+// ================= نظام الاحتساب =================
 setInterval(async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
   if (!guild) return;
@@ -182,19 +228,16 @@ setInterval(async () => {
   });
 }, 60000);
 
-setInterval(() => sendTop(), 60000); // تحديث التوب كل دقيقة
+setInterval(() => sendTop(), 60000);
 
-// الجدولة التلقائية للتصفيير والتكريم
 cron.schedule('0 0 * * 0', async () => {
   await sendHonorRoll('weekly'); 
   db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 Weekly reset and honor roll updated.");
 });
 
 cron.schedule('0 0 1 * *', async () => {
   await sendHonorRoll('monthly');
   db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 Monthly reset and honor roll updated.");
 });
 
 client.login(process.env.TOKEN);
