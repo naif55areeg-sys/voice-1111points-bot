@@ -3,7 +3,6 @@ const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuild
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 
-// ================= تعريف العميل =================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -12,23 +11,15 @@ const client = new Client({
   ]
 });
 
-// ================= قاعدة البيانات (المسار الدائم في Railway) =================
-// تم تعديل المسار ليكون داخل الـ Volume المحمي
+// قاعدة البيانات بالمسار الدائم في Railway
 const db = new sqlite3.Database('/data/voice.db');
 
-db.run(`CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  total INTEGER DEFAULT 0,
-  weekly INTEGER DEFAULT 0,
-  monthly INTEGER DEFAULT 0
-)`);
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, total INTEGER DEFAULT 0, weekly INTEGER DEFAULT 0, monthly INTEGER DEFAULT 0)`);
+  db.run(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`);
+});
 
-db.run(`CREATE TABLE IF NOT EXISTS config (
-  key TEXT PRIMARY KEY,
-  value TEXT
-)`);
-
-// ================= أدوات =================
+// ================= أدوات التنسيق والبيانات =================
 function formatTime(ms) {
   const h = Math.floor(ms / 3600000);
   const m = Math.floor((ms % 3600000) / 60000);
@@ -37,9 +28,7 @@ function formatTime(ms) {
 
 function getConfig(key) {
   return new Promise(resolve => {
-    db.get(`SELECT value FROM config WHERE key = ?`, [key], (err, row) => {
-      resolve(row ? row.value : null);
-    });
+    db.get(`SELECT value FROM config WHERE key = ?`, [key], (err, row) => resolve(row ? row.value : null));
   });
 }
 
@@ -47,12 +36,14 @@ function setConfig(key, value) {
   db.run(`INSERT OR REPLACE INTO config(key,value) VALUES(?,?)`, [key, value]);
 }
 
-// ================= متغير لمرة المنشن =================
+let multiplierActive = false;
+let multiplierValue = 3;
 let mentionSent = false;
 
-// ================= تحديث / إرسال التوب =================
+// ================= وظيفة تحديث التوب الحالي =================
 async function sendTop() {
-  const channel = await client.channels.fetch(process.env.CHANNEL_ID);
+  const channelId = process.env.CHANNEL_ID;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) return;
 
   const results = {};
@@ -61,25 +52,15 @@ async function sendTop() {
   results.monthly = await new Promise(res => db.all('SELECT * FROM users ORDER BY monthly DESC LIMIT 10', (e, r) => res(r || [])));
 
   function build(rows, type) {
-    if (!rows || !rows.length) return "لا يوجد بيانات";
+    if (!rows || !rows.length) return "لا يوجد بيانات حالياً";
     return rows.map((r, i) => {
       const ms = type === "total" ? r.total : type === "weekly" ? r.weekly : r.monthly;
       return `**${i + 1}.** <@${r.id}> — ${formatTime(ms)}`;
     }).join('\n');
   }
 
-  let multiplierFieldValue = "";
-  if (multiplierActive) {
-    if (!mentionSent) {
-      multiplierFieldValue = `✅ مضاعفة مفعلة x${multiplierValue}\n@everyone`;
-      mentionSent = true;
-    } else {
-      multiplierFieldValue = `✅ مضاعفة مفعلة x${multiplierValue}`;
-    }
-  } else {
-    multiplierFieldValue = "❌ مضاعفة متوقفة";
-    mentionSent = false;
-  }
+  let multiplierText = multiplierActive ? `✅ مضاعفة مفعلة x${multiplierValue}${!mentionSent ? "\n@everyone" : ""}` : "❌ مضاعفة متوقفة";
+  if (multiplierActive) mentionSent = true;
 
   const embed = new EmbedBuilder()
     .setTitle("🏆 قائمة المتصدرين بالتواجد الصوتي")
@@ -88,143 +69,132 @@ async function sendTop() {
       { name: "💯 التوب الكلي", value: build(results.total, "total") },
       { name: "📅 التوب الشهري", value: build(results.monthly, "monthly") },
       { name: "📆 التوب الأسبوعي", value: build(results.weekly, "weekly") },
-      { name: "⚡ حالة المضاعفة", value: multiplierFieldValue }
+      { name: "⚡ حالة المضاعفة", value: multiplierText }
     )
     .setFooter({ text: "Voice System By Nay 👑" });
 
   let messageId = await getConfig("topMessageId");
-
   if (messageId) {
-    try {
-      const msg = await channel.messages.fetch(messageId);
-      await msg.edit({ embeds: [embed] });
-      return;
-    } catch {
-      console.log("⚠️ لم أجد الرسالة القديمة — سيتم إنشاء جديدة");
-    }
+    const msg = await channel.messages.fetch(messageId).catch(() => null);
+    if (msg) return msg.edit({ embeds: [embed] });
   }
-
-  const msg = await channel.send({ embeds: [embed] });
-  setConfig("topMessageId", msg.id);
+  const newMsg = await channel.send({ embeds: [embed] });
+  setConfig("topMessageId", newMsg.id);
 }
 
-// ================= إضافة وقت يدوي =================
-function addTime(userId, type, minutes) {
-  const ms = minutes * 60 * 1000;
-  db.run(`INSERT OR IGNORE INTO users(id,total,weekly,monthly) VALUES(?,0,0,0)`, [userId]);
-  db.run(`UPDATE users SET ${type} = ${type} + ? WHERE id = ?`, [ms, userId], sendTop);
+// ================= وظيفة إرسال لوحة الشرف (التكريم) =================
+async function sendHonorRoll(type) { 
+  const channelId = process.env.CHANNEL_ID;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel) return;
+
+  const rows = await new Promise(res => db.all(`SELECT * FROM users WHERE ${type} > 0 ORDER BY ${type} DESC LIMIT 5`, (e, r) => res(r || [])));
+  if (rows.length === 0) return console.log(`No data to record for ${type} honor roll.`);
+
+  const title = type === 'weekly' ? "🌟 نجوم الأسبوع الماضي" : "💎 أساطير الشهر الماضي";
+  const configKey = type === 'weekly' ? "lastWeeklyMsgId" : "lastMonthlyMsgId";
+
+  const list = rows.map((r, i) => `**#${i + 1}** <@${r.id}> — ${formatTime(r[type])}`).join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(list)
+    .setColor(type === 'weekly' ? "#3498db" : "#9b59b6")
+    .setTimestamp()
+    .setFooter({ text: "لوحة الشرف الدائمة" });
+
+  let oldId = await getConfig(configKey);
+  if (oldId) {
+    const oldMsg = await channel.messages.fetch(oldId).catch(() => null);
+    if (oldMsg) return oldMsg.edit({ embeds: [embed] });
+  }
+  const newMsg = await channel.send({ embeds: [embed] });
+  setConfig(configKey, newMsg.id);
 }
 
-// ================= مضاعفة النقاط =================
-let multiplierActive = false;
-let multiplierValue = 3;
-
-// ================= أوامر السلاش =================
+// ================= التعامل مع الأوامر =================
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
-
-  const owners = process.env.OWNER_IDS ? process.env.OWNER_IDS.split(',').map(id => id.trim()) : [];
-  const multiUsers = process.env.MULTI_USERS ? process.env.MULTI_USERS.split(',').map(id => id.trim()) : [];
-
-  if (interaction.commandName === 'addtime') {
-    if (!owners.includes(interaction.user.id)) {
-      return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
-    }
-    const user = interaction.options.getUser('user');
-    const type = interaction.options.getString('type');
-    const minutes = interaction.options.getInteger('minutes');
-    addTime(user.id, type, minutes);
-    return interaction.reply({ content: `✅ تمت إضافة ${minutes} دقيقة (${type}) لـ ${user.tag}`, ephemeral: true });
-  }
+  const owners = (process.env.OWNER_IDS || "").split(',').map(id => id.trim());
+  const multiUsers = (process.env.MULTI_USERS || "").split(',').map(id => id.trim());
 
   if (interaction.commandName === 'rank') {
-    db.all('SELECT id, total FROM users ORDER BY total DESC', [], (err, rows) => {
-      if (err || !rows || !rows.length) return interaction.reply({ content: "❌ لا توجد بيانات", ephemeral: true });
-      const rank = rows.findIndex(r => r.id === interaction.user.id) + 1;
-      const userData = rows.find(r => r.id === interaction.user.id);
-      const timeStr = formatTime(userData ? userData.total : 0);
-      interaction.reply({ content: `🏅 ترتيبك: **${rank || '-'}**\n⏱️ إجمالي وقتك: **${timeStr}**`, ephemeral: true });
+    db.get('SELECT * FROM users WHERE id = ?', [interaction.user.id], (err, row) => {
+      if (!row) return interaction.reply({ content: "❌ ليس لديك بيانات بعد، ادخل الرومات الصوتية أولاً!", ephemeral: true });
+      interaction.reply({ 
+        content: `🏅 ترتيبك الكلي ومجموع وقتك:\n⏱️ الوقت: **${formatTime(row.total)}**`, 
+        ephemeral: true 
+      });
     });
+  }
+
+  // أمر التجربة الجديد لرؤية لوحة الشرف فوراً
+  if (interaction.commandName === 'test_honor') {
+    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ للأونر فقط", ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    await sendHonorRoll('weekly');
+    await sendHonorRoll('monthly');
+    await interaction.editReply({ content: "✅ تم تحديث/إرسال لوحات الشرف بنجاح أسفل التوب الرئيسي." });
   }
 
   if (interaction.commandName === 'multiplier') {
-    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
-    multiplierActive = true;
-    interaction.reply({ content: `✅ تم تفعيل مضاعفة النقاط x${multiplierValue}`, ephemeral: true });
+    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
+    multiplierActive = true; mentionSent = false;
+    await interaction.reply({ content: "✅ تم تفعيل المضاعفة", ephemeral: true });
+    sendTop();
   }
 
   if (interaction.commandName === 'stopmultiplier') {
-    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ ما عندك صلاحية", ephemeral: true });
+    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
     multiplierActive = false;
-    interaction.reply({ content: "✅ تم إيقاف مضاعفة النقاط", ephemeral: true });
+    await interaction.reply({ content: "✅ تم إيقاف المضاعفة", ephemeral: true });
+    sendTop();
   }
 });
 
-// ================= عند تشغيل البوت =================
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-
   const commands = [
-    new SlashCommandBuilder()
-      .setName('addtime')
-      .setDescription('إضافة وقت')
-      .addUserOption(o => o.setName('user').setDescription('الشخص').setRequired(true))
-      .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true)
-        .addChoices(
-          { name: 'total', value: 'total' },
-          { name: 'weekly', value: 'weekly' },
-          { name: 'monthly', value: 'monthly' }
-        ))
-      .addIntegerOption(o => o.setName('minutes').setDescription('الدقائق').setRequired(true)),
-    new SlashCommandBuilder().setName('rank').setDescription('يعرض ترتيبك بالتواجد الصوتي'),
-    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل مضاعفة النقاط (محمي)'),
-    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف مضاعفة النقاط (محمي)')
-  ].map(command => command.toJSON());
-
+    new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك وتواجدك'),
+    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل مضاعفة النقاط'),
+    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف مضاعفة النقاط'),
+    new SlashCommandBuilder().setName('test_honor').setDescription('تجربة إرسال لوحة الشرف (للأونر)')
+  ];
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
   try {
     await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
-    console.log("✅ تمت مزامنة الأوامر");
-  } catch (error) {
-    console.error(error);
-  }
-
+    console.log("✅ Commands registered.");
+  } catch (e) { console.error(e); }
   sendTop();
 });
 
-// ================= إضافة الوقت كل دقيقة =================
+// ================= نظام احتساب الوقت والجدولة =================
 setInterval(async () => {
-  try {
-    const guild = await client.guilds.fetch(process.env.GUILD_ID);
-    const voiceStates = guild.voiceStates.cache;
+  const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
+  if (!guild) return;
+  const voiceStates = guild.voiceStates.cache;
+  let increment = 60000 * (multiplierActive ? multiplierValue : 1);
 
-    let increment = 60 * 1000;
-    if (multiplierActive) increment *= multiplierValue;
+  voiceStates.forEach(vs => {
+    if (!vs.channelId || vs.member.user.bot) return;
+    db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [vs.id]);
+    db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE id = ?`, [increment, increment, increment, vs.id]);
+  });
+}, 60000);
 
-    voiceStates.forEach(vs => {
-      if (!vs.channelId || vs.member.user.bot) return;
-      db.run(`INSERT OR IGNORE INTO users(id,total,weekly,monthly) VALUES(?,0,0,0)`, [vs.id]);
-      db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE id = ?`, [increment, increment, increment, vs.id]);
-    });
-  } catch (e) {
-    console.error("خطأ في تحديث الوقت:", e);
-  }
-}, 60 * 1000);
+setInterval(() => sendTop(), 60000); // تحديث التوب كل دقيقة
 
-// ================= تحديث التوب كل دقيقة =================
-setInterval(() => {
-  sendTop();
-}, 60 * 1000);
-
-// ================= تصفيرات =================
-cron.schedule('0 0 * * 0', () => {
+// الجدولة التلقائية للتصفيير والتكريم
+cron.schedule('0 0 * * 0', async () => {
+  await sendHonorRoll('weekly'); 
   db.run(`UPDATE users SET weekly = 0`);
-  console.log("🔄 تصفير أسبوعي");
+  console.log("🔄 Weekly reset and honor roll updated.");
 });
 
-cron.schedule('0 0 1 * *', () => {
+cron.schedule('0 0 1 * *', async () => {
+  await sendHonorRoll('monthly');
   db.run(`UPDATE users SET monthly = 0`);
-  console.log("🔄 تصفير شهري");
+  console.log("🔄 Monthly reset and honor roll updated.");
 });
 
 client.login(process.env.TOKEN);
