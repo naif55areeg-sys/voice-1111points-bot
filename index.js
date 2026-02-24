@@ -175,52 +175,44 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: "✅ أوقفت المضاعفة", ephemeral: true });
       sendTop();
     }
-   if (interaction.commandName === 'rank') {
-        // يسمح لك تشوف رتبتك أو رتبة أي شخص تمنشنه
+  if (interaction.commandName === 'rank') {
         const target = interaction.options.getUser('user') || interaction.user;
 
         db.get(`SELECT total, weekly, monthly, win_streak FROM users WHERE id = ?`, [target.id], (err, row) => {
             if (err) return console.error(err.message);
 
-            // لو الشخص ماله بيانات نحط 0
             const total = row ? row.total : 0;
             const weekly = row ? row.weekly : 0;
             const monthly = row ? row.monthly : 0;
             const streak = row ? row.win_streak || 0 : 0;
 
             const rankEmbed = {
-                color: 0x5865F2, // لون أزرق ديسكورد
+                color: 0x5865F2,
                 title: `📊 إحصائيات الصوت | ${target.username}`,
-                thumbnail: {
-                    url: target.displayAvatarURL({ dynamic: true }),
-                },
-               fields: [
-                {
-                    name: '⏳ الوقت الإجمالي',
-                    // إذا كان الرقم بالثواني، نقسم على 3600 للساعات
-                    value: `\`${Math.floor(total / 60)} ساعة و ${total % 60} دقيقة\``,
-                    inline: false,
-                },
-                {
-                    name: '📅 هذا الشهر',
-                    value: `\`${Math.floor(monthly / 60)}\` س و \`${monthly % 60}\` د`,
-                    inline: true,
-                },
-                {
-                    name: '🗓️ هذا الأسبوع',
-                    value: `\`${Math.floor(weekly / 60)}\` س و \`${weekly % 60}\` د`,
-                    inline: true,
-                },
-                {
-                    name: '🔥 سلسلة الانتصارات',
-                    value: `\`${streak}\` فوز متتالي`,
-                    inline: false,
-                },
-            ],
-                footer: {
-                    text: `طلب بواسطة: ${interaction.user.tag}`,
-                    icon_url: interaction.user.displayAvatarURL(),
-                },
+                thumbnail: { url: target.displayAvatarURL({ dynamic: true }) },
+                fields: [
+                    { 
+                        name: '⏳ الوقت الإجمالي', 
+                        value: `\`${formatTime(total)}\``, // هنا استخدمنا الحسبة الصح
+                        inline: false 
+                    },
+                    { 
+                        name: '📅 هذا الشهر', 
+                        value: `\`${formatTime(monthly)}\``, 
+                        inline: true 
+                    },
+                    { 
+                        name: '🗓️ هذا الأسبوع', 
+                        value: `\`${formatTime(weekly)}\``, 
+                        inline: true 
+                    },
+                    { 
+                        name: '🔥 سلسلة الانتصارات', 
+                        value: `\`${streak}\` فوز متتالي`, 
+                        inline: false 
+                    },
+                ],
+                footer: { text: `طلب بواسطة: ${interaction.user.tag}`, icon_url: interaction.user.displayAvatarURL() },
                 timestamp: new Date(),
             };
 
