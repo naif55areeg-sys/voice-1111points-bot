@@ -11,7 +11,7 @@ const client = new Client({
   ]
 });
 
-// ================= قاعدة البيانات (المسار الدائم) =================
+// ================= قاعدة البيانات =================
 const db = new sqlite3.Database('/data/voice.db');
 
 db.serialize(() => {
@@ -30,7 +30,7 @@ function formatTime(ms) {
   return `${isNegative ? '-' : ''}${h || 0}h ${m || 0}m`;
 }
 
-function getConfig(key) {
+async function getConfig(key) {
   return new Promise(resolve => {
     db.get(`SELECT value FROM config WHERE key = ?`, [key], (err, row) => resolve(row ? row.value : null));
   });
@@ -110,7 +110,7 @@ async function sendHonorRoll(type) {
   setConfig(configKey, newMsg.id);
 }
 
-// ================= إدارة الوقت (من كودك القديم) =================
+// ================= إدارة الوقت =================
 function modifyTime(userId, type, minutes, isAddition = true) {
   const ms = minutes * 60 * 1000;
   const operator = isAddition ? '+' : '-';
@@ -122,13 +122,12 @@ function modifyTime(userId, type, minutes, isAddition = true) {
   }
 }
 
-// ================= التعامل مع الأوامر والتفاعلات =================
+// ================= التفاعلات =================
 client.on('interactionCreate', async interaction => {
   const owners = (process.env.OWNER_IDS || "").split(',').map(id => id.trim());
   const multiUsers = (process.env.MULTI_USERS || "").split(',').map(id => id.trim());
 
   if (interaction.isChatInputCommand()) {
-    // 1. الأوامر الإدارية
     if (interaction.commandName === 'addtime') {
       if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
       modifyTime(interaction.options.getUser('user').id, interaction.options.getString('type'), interaction.options.getInteger('minutes'), true);
@@ -148,8 +147,6 @@ client.on('interactionCreate', async interaction => {
       if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
       return interaction.reply({ content: `📂 المسار: \`${db.filename}\``, ephemeral: true });
     }
-
-    // 2. أوامر المضاعفة
     if (interaction.commandName === 'multiplier') {
       if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
       multiplierActive = true; mentionSent = false;
@@ -162,15 +159,12 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: "✅ أوقفت المضاعفة", ephemeral: true });
       sendTop();
     }
-
-    // 3. أوامر المستخدمين
     if (interaction.commandName === 'rank') {
       db.get('SELECT * FROM users WHERE id = ?', [interaction.user.id], (err, row) => {
         if (!row) return interaction.reply({ content: "❌ لا بيانات.", ephemeral: true });
         interaction.reply({ content: `⏱️ مجموع وقتك: **${formatTime(row.total)}**\n🔥 سلسلة الانتصارات: **${row.win_streak || 0}**`, ephemeral: true });
       });
     }
-
     if (interaction.commandName === 'duel') {
       const target = interaction.options.getUser('user');
       const hours = interaction.options.getInteger('hours');
@@ -179,11 +173,10 @@ client.on('interactionCreate', async interaction => {
         new ButtonBuilder().setCustomId(`accept_${interaction.user.id}_${target.id}_${hours}`).setLabel('موافقة').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(`reject_${target.id}`).setLabel('رفض').setStyle(ButtonStyle.Danger)
       );
-      await interaction.reply({ embeds: [new EmbedBuilder().setTitle("⚔️ تحدي جديد").setDescription(`<@${interaction.user.id}> تحدى <@${target.id}> لمدة ${hours} ساعة.`).setColor("#3498db")], components: [row] });
+      await interaction.reply({ embeds: [new EmbedBuilder().setTitle("⚔️ تحدي جديد").setDescription(`<@${interaction.user.id}> تحدى <@${target.id}> لـ ${hours} ساعة.`).setColor("#3498db")], components: [row] });
     }
   }
 
-  // التعامل مع الأزرار
   if (interaction.isButton()) {
     if (interaction.customId.startsWith('accept_')) {
       const [_, u1, u2, hours] = interaction.customId.split('_');
@@ -200,7 +193,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// ================= أنظمة الحساب والجدولة =================
+// ================= الأنظمة الدورية =================
 setInterval(async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
   if (!guild) return;
@@ -214,7 +207,6 @@ setInterval(async () => {
   });
 }, 60000);
 
-// مراقب التحديات والنتائج
 setInterval(() => {
   db.all(`SELECT * FROM duels WHERE status='active' AND end_time <= ?`, [Date.now()], async (err, rows) => {
     if (!rows) return;
@@ -253,20 +245,20 @@ setInterval(() => sendTop(), 60000);
 cron.schedule('0 0 * * 0', async () => { await sendHonorRoll('weekly'); db.run(`UPDATE users SET weekly = 0`); });
 cron.schedule('0 0 1 * *', async () => { await sendHonorRoll('monthly'); db.run(`UPDATE users SET monthly = 0`); });
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   const choices = [{ name: 'الكل', value: 'all' }, { name: 'كلي', value: 'total' }, { name: 'أسبوعي', value: 'weekly' }, { name: 'شهري', value: 'monthly' }];
   const commands = [
-    new SlashCommandBuilder().setName('rank').setDescription('وقتك الشخصي'),
-    new SlashCommandBuilder().setName('check_path').setDescription('فحص التخزين'),
-    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل المضاعفة'),
-    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف المضاعفة'),
-    new SlashCommandBuilder().setName('test_honor').setDescription('تجربة لوحة الشرف'),
-    new SlashCommandBuilder().setName('duel').setDescription('تحدي شخص').addUserOption(o=>o.setName('user').setRequired(true).setDescription('الخصم')).addIntegerOption(o=>o.setName('hours').setRequired(true).setDescription('الساعات')),
-    new SlashCommandBuilder().setName('addtime').setDescription('زيادة وقت').addUserOption(o=>o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o=>o.setName('type').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setRequired(true)),
-    new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت').addUserOption(o=>o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o=>o.setName('type').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setRequired(true))
+    new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك الشخصي'),
+    new SlashCommandBuilder().setName('check_path').setDescription('فحص تخزين البيانات'),
+    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل مضاعفة الوقت'),
+    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف مضاعفة الوقت'),
+    new SlashCommandBuilder().setName('test_honor').setDescription('تجربة إرسال لوحة الشرف'),
+    new SlashCommandBuilder().setName('duel').setDescription('بدء تحدي ثنائي').addUserOption(o=>o.setName('user').setDescription('اختر العضو الخصم').setRequired(true)).addIntegerOption(o=>o.setName('hours').setDescription('عدد ساعات التحدي').setRequired(true)),
+    new SlashCommandBuilder().setName('addtime').setDescription('إضافة وقت لعضو').addUserOption(o=>o.setName('user').setDescription('اختر العضو').setRequired(true)).addStringOption(o=>o.setName('type').setDescription('نوع التوب').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setDescription('الدقائق').setRequired(true)),
+    new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت من عضو').addUserOption(o=>o.setName('user').setDescription('اختر العضو').setRequired(true)).addStringOption(o=>o.setName('type').setDescription('نوع التوب').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setDescription('الدقائق').setRequired(true))
   ];
   await new REST({version:'10'}).setToken(process.env.TOKEN).put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), {body:commands});
-  console.log("Ready!"); sendTop();
+  console.log("Commands Loaded Successfully ✅"); sendTop();
 });
 
 client.login(process.env.TOKEN);
