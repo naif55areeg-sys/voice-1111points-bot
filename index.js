@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 
@@ -15,8 +15,10 @@ const client = new Client({
 const db = new sqlite3.Database('/data/voice.db');
 
 db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, total INTEGER DEFAULT 0, weekly INTEGER DEFAULT 0, monthly INTEGER DEFAULT 0)`);
+  db.run(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, total INTEGER DEFAULT 0, weekly INTEGER DEFAULT 0, monthly INTEGER DEFAULT 0, win_streak INTEGER DEFAULT 0)`);
   db.run(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`);
+  db.run(`CREATE TABLE IF NOT EXISTS duels (id INTEGER PRIMARY KEY AUTOINCREMENT, user1 TEXT, user2 TEXT, score1 INTEGER DEFAULT 0, score2 INTEGER DEFAULT 0, end_time INTEGER, channel_id TEXT, status TEXT DEFAULT 'pending')`);
+  db.run(`CREATE TABLE IF NOT EXISTS revenge (loser_id TEXT PRIMARY KEY, last_defeated_by TEXT)`);
 });
 
 // ================= أدوات التنسيق =================
@@ -42,23 +44,22 @@ let multiplierActive = false;
 let multiplierValue = 3;
 let mentionSent = false;
 
-// ================= وظيفة تحديث التوب الحالي =================
+// ================= وظائف التوب ولوحة الشرف =================
 async function sendTop() {
   const channelId = process.env.CHANNEL_ID;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) return;
 
-  const results = {};
-  results.total = await new Promise(res => db.all('SELECT * FROM users ORDER BY total DESC LIMIT 10', (e, r) => res(r || [])));
-  results.weekly = await new Promise(res => db.all('SELECT * FROM users ORDER BY weekly DESC LIMIT 10', (e, r) => res(r || [])));
-  results.monthly = await new Promise(res => db.all('SELECT * FROM users ORDER BY monthly DESC LIMIT 10', (e, r) => res(r || [])));
+  const getTop = (type) => new Promise(res => db.all(`SELECT * FROM users ORDER BY ${type} DESC LIMIT 10`, (e, r) => res(r || [])));
+  const results = {
+    total: await getTop('total'),
+    weekly: await getTop('weekly'),
+    monthly: await getTop('monthly')
+  };
 
   function build(rows, type) {
     if (!rows || !rows.length) return "لا يوجد بيانات حالياً";
-    return rows.map((r, i) => {
-      const ms = type === "total" ? r.total : type === "weekly" ? r.weekly : r.monthly;
-      return `**${i + 1}.** <@${r.id}> — ${formatTime(ms)}`;
-    }).join('\n');
+    return rows.map((r, i) => `**${i + 1}.** <@${r.id}> — ${formatTime(r[type])}`).join('\n');
   }
 
   let multiplierText = multiplierActive ? `✅ مضاعفة مفعلة x${multiplierValue}${!mentionSent ? "\n@everyone" : ""}` : "❌ مضاعفة متوقفة";
@@ -84,20 +85,6 @@ async function sendTop() {
   setConfig("topMessageId", newMsg.id);
 }
 
-// ================= إضافة/نقص وقت =================
-function modifyTime(userId, type, minutes, isAddition = true) {
-  const ms = minutes * 60 * 1000;
-  const operator = isAddition ? '+' : '-';
-  db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [userId]);
-
-  if (type === 'all') {
-    db.run(`UPDATE users SET total = total ${operator} ?, weekly = weekly ${operator} ?, monthly = monthly ${operator} ? WHERE id = ?`, [ms, ms, ms, userId], () => sendTop());
-  } else {
-    db.run(`UPDATE users SET ${type} = ${type} ${operator} ? WHERE id = ?`, [ms, userId], () => sendTop());
-  }
-}
-
-// ================= وظيفة إرسال لوحة الشرف =================
 async function sendHonorRoll(type) { 
   const channelId = process.env.CHANNEL_ID;
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -111,11 +98,8 @@ async function sendHonorRoll(type) {
   const list = rows.map((r, i) => `**#${i + 1}** <@${r.id}> — ${formatTime(r[type])}`).join('\n');
 
   const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(list)
-    .setColor(type === 'weekly' ? "#3498db" : "#9b59b6")
-    .setTimestamp()
-    .setFooter({ text: "لوحة الشرف الدائمة" });
+    .setTitle(title).setDescription(list).setColor(type === 'weekly' ? "#3498db" : "#9b59b6")
+    .setTimestamp().setFooter({ text: "لوحة الشرف الدائمة" });
 
   let oldId = await getConfig(configKey);
   if (oldId) {
@@ -126,103 +110,163 @@ async function sendHonorRoll(type) {
   setConfig(configKey, newMsg.id);
 }
 
-// ================= التعامل مع الأوامر =================
+// ================= إدارة الوقت (من كودك القديم) =================
+function modifyTime(userId, type, minutes, isAddition = true) {
+  const ms = minutes * 60 * 1000;
+  const operator = isAddition ? '+' : '-';
+  db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [userId]);
+  if (type === 'all') {
+    db.run(`UPDATE users SET total = total ${operator} ?, weekly = weekly ${operator} ?, monthly = monthly ${operator} ? WHERE id = ?`, [ms, ms, ms, userId], () => sendTop());
+  } else {
+    db.run(`UPDATE users SET ${type} = ${type} ${operator} ? WHERE id = ?`, [ms, userId], () => sendTop());
+  }
+}
+
+// ================= التعامل مع الأوامر والتفاعلات =================
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
   const owners = (process.env.OWNER_IDS || "").split(',').map(id => id.trim());
   const multiUsers = (process.env.MULTI_USERS || "").split(',').map(id => id.trim());
 
-  // أمر الفحص (جديد لضمان الأمان)
-  if (interaction.commandName === 'check_path') {
-    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
-    return interaction.reply({ 
-      content: `📂 مسار التخزين: \`${db.filename}\`\n${db.filename.startsWith('/data/') ? "✅ وضعك سليم (Volume)" : "⚠️ خطر (ذاكرة مؤقتة)"}`, 
-      ephemeral: true 
-    });
+  if (interaction.isChatInputCommand()) {
+    // 1. الأوامر الإدارية
+    if (interaction.commandName === 'addtime') {
+      if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
+      modifyTime(interaction.options.getUser('user').id, interaction.options.getString('type'), interaction.options.getInteger('minutes'), true);
+      return interaction.reply({ content: "✅ تمت الإضافة", ephemeral: true });
+    }
+    if (interaction.commandName === 'removetime') {
+      if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
+      modifyTime(interaction.options.getUser('user').id, interaction.options.getString('type'), interaction.options.getInteger('minutes'), false);
+      return interaction.reply({ content: "📉 تم الخصم", ephemeral: true });
+    }
+    if (interaction.commandName === 'test_honor') {
+      if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
+      await sendHonorRoll('weekly'); await sendHonorRoll('monthly');
+      return interaction.reply({ content: "✅ حدثت لوحات الشرف", ephemeral: true });
+    }
+    if (interaction.commandName === 'check_path') {
+      if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
+      return interaction.reply({ content: `📂 المسار: \`${db.filename}\``, ephemeral: true });
+    }
+
+    // 2. أوامر المضاعفة
+    if (interaction.commandName === 'multiplier') {
+      if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
+      multiplierActive = true; mentionSent = false;
+      await interaction.reply({ content: "✅ فعلت المضاعفة", ephemeral: true });
+      sendTop();
+    }
+    if (interaction.commandName === 'stopmultiplier') {
+      if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
+      multiplierActive = false;
+      await interaction.reply({ content: "✅ أوقفت المضاعفة", ephemeral: true });
+      sendTop();
+    }
+
+    // 3. أوامر المستخدمين
+    if (interaction.commandName === 'rank') {
+      db.get('SELECT * FROM users WHERE id = ?', [interaction.user.id], (err, row) => {
+        if (!row) return interaction.reply({ content: "❌ لا بيانات.", ephemeral: true });
+        interaction.reply({ content: `⏱️ مجموع وقتك: **${formatTime(row.total)}**\n🔥 سلسلة الانتصارات: **${row.win_streak || 0}**`, ephemeral: true });
+      });
+    }
+
+    if (interaction.commandName === 'duel') {
+      const target = interaction.options.getUser('user');
+      const hours = interaction.options.getInteger('hours');
+      if (target.id === interaction.user.id) return interaction.reply({ content: "لا تتحدى نفسك!", ephemeral: true });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`accept_${interaction.user.id}_${target.id}_${hours}`).setLabel('موافقة').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`reject_${target.id}`).setLabel('رفض').setStyle(ButtonStyle.Danger)
+      );
+      await interaction.reply({ embeds: [new EmbedBuilder().setTitle("⚔️ تحدي جديد").setDescription(`<@${interaction.user.id}> تحدى <@${target.id}> لمدة ${hours} ساعة.`).setColor("#3498db")], components: [row] });
+    }
   }
 
-  if (interaction.commandName === 'addtime') {
-    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
-    modifyTime(interaction.options.getUser('user').id, interaction.options.getString('type'), interaction.options.getInteger('minutes'), true);
-    return interaction.reply({ content: "✅ تمت الإضافة", ephemeral: true });
-  }
-
-  if (interaction.commandName === 'removetime') {
-    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
-    modifyTime(interaction.options.getUser('user').id, interaction.options.getString('type'), interaction.options.getInteger('minutes'), false);
-    return interaction.reply({ content: "📉 تم الخصم", ephemeral: true });
-  }
-
-  if (interaction.commandName === 'rank') {
-    db.get('SELECT * FROM users WHERE id = ?', [interaction.user.id], (err, row) => {
-      if (!row) return interaction.reply({ content: "❌ لا بيانات.", ephemeral: true });
-      interaction.reply({ content: `⏱️ مجموع وقتك: **${formatTime(row.total)}**`, ephemeral: true });
-    });
-  }
-
-  if (interaction.commandName === 'multiplier') {
-    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا صلاحية", ephemeral: true });
-    multiplierActive = true; mentionSent = false;
-    await interaction.reply({ content: "✅ فعلت المضاعفة", ephemeral: true });
-    sendTop();
-  }
-
-  if (interaction.commandName === 'stopmultiplier') {
-    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا صلاحية", ephemeral: true });
-    multiplierActive = false;
-    await interaction.reply({ content: "✅ أوقفت المضاعفة", ephemeral: true });
-    sendTop();
-  }
-
-  if (interaction.commandName === 'test_honor') {
-    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
-    await sendHonorRoll('weekly');
-    await sendHonorRoll('monthly');
-    await interaction.reply({ content: "✅ حدثت لوحات الشرف.", ephemeral: true });
+  // التعامل مع الأزرار
+  if (interaction.isButton()) {
+    if (interaction.customId.startsWith('accept_')) {
+      const [_, u1, u2, hours] = interaction.customId.split('_');
+      if (interaction.user.id !== u2) return interaction.reply({ content: "التحدي ليس لك!", ephemeral: true });
+      const end = Date.now() + (parseInt(hours) * 3600000);
+      db.run(`INSERT INTO duels (user1, user2, end_time, channel_id, status) VALUES (?, ?, ?, ?, 'active')`, [u1, u2, end, interaction.channelId]);
+      await interaction.update({ content: `✅ بدأ التحدي! ينتهي <t:${Math.floor(end/1000)}:R>`, embeds: [], components: [] });
+    }
+    if (interaction.customId.startsWith('reject_')) {
+      const [_, u2] = interaction.customId.split('_');
+      if (interaction.user.id !== u2) return interaction.reply({ content: "التحدي ليس لك!", ephemeral: true });
+      await interaction.update({ content: "❌ تم رفض التحدي.", embeds: [], components: [] });
+    }
   }
 });
 
-client.once('ready', async () => {
-  console.log(`Ready: ${client.user.tag}`);
-  const choices = [{ name: 'الكل', value: 'all' }, { name: 'كلي', value: 'total' }, { name: 'أسبوعي', value: 'weekly' }, { name: 'شهري', value: 'monthly' }];
-  const commands = [
-    new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك'),
-    new SlashCommandBuilder().setName('check_path').setDescription('فحص التخزين'),
-    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل المضاعفة'),
-    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف المضاعفة'),
-    new SlashCommandBuilder().setName('test_honor').setDescription('تجربة لوحة الشرف'),
-    new SlashCommandBuilder().setName('addtime').setDescription('زيادة وقت').addUserOption(o => o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o => o.setName('type').setRequired(true).addChoices(...choices).setDescription('النوع')).addIntegerOption(o => o.setName('minutes').setRequired(true).setDescription('الدقائق')),
-    new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت').addUserOption(o => o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o => o.setName('type').setRequired(true).addChoices(...choices).setDescription('النوع')).addIntegerOption(o => o.setName('minutes').setRequired(true).setDescription('الدقائق'))
-  ];
-
-  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-  await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
-  sendTop();
-});
-
-// ================= نظام الاحتساب والجدولة =================
+// ================= أنظمة الحساب والجدولة =================
 setInterval(async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
   if (!guild) return;
-  const voiceStates = guild.voiceStates.cache;
   let increment = 60000 * (multiplierActive ? multiplierValue : 1);
-  voiceStates.forEach(vs => {
+  guild.voiceStates.cache.forEach(vs => {
     if (!vs.channelId || vs.member.user.bot) return;
     db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [vs.id]);
-    db.run(`UPDATE users SET total = total + ?, weekly = weekly + ?, monthly = monthly + ? WHERE id = ?`, [increment, increment, increment, vs.id]);
+    db.run(`UPDATE users SET total=total+?, weekly=weekly+?, monthly=monthly+? WHERE id=?`, [increment, increment, increment, vs.id]);
+    db.run(`UPDATE duels SET score1=score1+? WHERE user1=? AND status='active'`, [increment, vs.id]);
+    db.run(`UPDATE duels SET score2=score2+? WHERE user2=? AND status='active'`, [increment, vs.id]);
+  });
+}, 60000);
+
+// مراقب التحديات والنتائج
+setInterval(() => {
+  db.all(`SELECT * FROM duels WHERE status='active' AND end_time <= ?`, [Date.now()], async (err, rows) => {
+    if (!rows) return;
+    for (const d of rows) {
+      const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
+      const chan = await client.channels.fetch(d.channel_id).catch(() => null);
+      if (!chan || !guild) continue;
+
+      let winId = d.score1 > d.score2 ? d.user1 : (d.score2 > d.score1 ? d.user2 : null);
+      let losId = winId === d.user1 ? d.user2 : d.user1;
+      const roleId = process.env.LOSER_ROLE_ID;
+
+      if (winId) {
+        db.get(`SELECT last_defeated_by FROM revenge WHERE loser_id=?`, [winId], async (e, r) => {
+          let revText = (r && r.last_defeated_by === losId) ? `\n\n**🔥 رديت ثاري ياهطف <@${losId}>** 🤡` : "";
+          db.run(`INSERT OR REPLACE INTO revenge (loser_id, last_defeated_by) VALUES (?, ?)`, [losId, winId]);
+          db.run(`UPDATE users SET win_streak=win_streak+1 WHERE id=?`, [winId]);
+          db.run(`UPDATE users SET win_streak=0 WHERE id=?`, [losId]);
+
+          const wM = await guild.members.fetch(winId).catch(() => null);
+          const lM = await guild.members.fetch(losId).catch(() => null);
+          if (wM && roleId) await wM.roles.remove(roleId).catch(() => null);
+          if (lM && roleId) await lM.roles.add(roleId).catch(() => null);
+
+          chan.send({ content: revText ? `<@${losId}> ابللللع!` : `<@${losId}> هاردلك..`, embeds: [new EmbedBuilder().setTitle("🏆 نتيجة التحدي").setDescription(`الفائز: <@${winId}>\nالخاسر: <@${losId}> 🤡${revText}`).setColor("#f1c40f")] });
+          setTimeout(async () => { const m = await guild.members.fetch(losId).catch(() => null); if (m && roleId) await m.roles.remove(roleId).catch(() => null); }, 24*60*60*1000);
+        });
+      } else { chan.send("⚖️ تعادل التحدي!"); }
+      db.run(`UPDATE duels SET status='finished' WHERE id=?`, [d.id]);
+    }
   });
 }, 60000);
 
 setInterval(() => sendTop(), 60000);
 
-cron.schedule('0 0 * * 0', async () => {
-  await sendHonorRoll('weekly'); 
-  db.run(`UPDATE users SET weekly = 0`);
-});
+cron.schedule('0 0 * * 0', async () => { await sendHonorRoll('weekly'); db.run(`UPDATE users SET weekly = 0`); });
+cron.schedule('0 0 1 * *', async () => { await sendHonorRoll('monthly'); db.run(`UPDATE users SET monthly = 0`); });
 
-cron.schedule('0 0 1 * *', async () => {
-  await sendHonorRoll('monthly');
-  db.run(`UPDATE users SET monthly = 0`);
+client.once('ready', async () => {
+  const choices = [{ name: 'الكل', value: 'all' }, { name: 'كلي', value: 'total' }, { name: 'أسبوعي', value: 'weekly' }, { name: 'شهري', value: 'monthly' }];
+  const commands = [
+    new SlashCommandBuilder().setName('rank').setDescription('وقتك الشخصي'),
+    new SlashCommandBuilder().setName('check_path').setDescription('فحص التخزين'),
+    new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل المضاعفة'),
+    new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف المضاعفة'),
+    new SlashCommandBuilder().setName('test_honor').setDescription('تجربة لوحة الشرف'),
+    new SlashCommandBuilder().setName('duel').setDescription('تحدي شخص').addUserOption(o=>o.setName('user').setRequired(true).setDescription('الخصم')).addIntegerOption(o=>o.setName('hours').setRequired(true).setDescription('الساعات')),
+    new SlashCommandBuilder().setName('addtime').setDescription('زيادة وقت').addUserOption(o=>o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o=>o.setName('type').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setRequired(true)),
+    new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت').addUserOption(o=>o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o=>o.setName('type').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setRequired(true))
+  ];
+  await new REST({version:'10'}).setToken(process.env.TOKEN).put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), {body:commands});
+  console.log("Ready!"); sendTop();
 });
 
 client.login(process.env.TOKEN);
