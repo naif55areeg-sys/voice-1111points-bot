@@ -15,7 +15,23 @@ const client = new Client({
 const db = new sqlite3.Database('/data/voice.db');
 
 db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, total INTEGER DEFAULT 0, weekly INTEGER DEFAULT 0, monthly INTEGER DEFAULT 0, win_streak INTEGER DEFAULT 0)`);
+  // 1. إنشاء الجدول الأساسي لو مو موجود (بدون العمود الجديد هنا)
+  db.run(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, total INTEGER DEFAULT 0, weekly INTEGER DEFAULT 0, monthly INTEGER DEFAULT 0)`);
+  
+  // 2. تحديث الجدول القديم وإضافة عمود win_streak إذا كان ناقص
+  db.run(`ALTER TABLE users ADD COLUMN win_streak INTEGER DEFAULT 0`, (err) => {
+    if (err) {
+      if (err.message.includes("duplicate column name")) {
+        // إذا العمود موجود أصلاً، ما يحتاج يسوي شيء
+      } else {
+        console.error("Error updating table:", err.message);
+      }
+    } else {
+      console.log("Column win_streak added successfully! ✅");
+    }
+  });
+
+  // 3. إنشاء بقية الجداول الجديدة
   db.run(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`);
   db.run(`CREATE TABLE IF NOT EXISTS duels (id INTEGER PRIMARY KEY AUTOINCREMENT, user1 TEXT, user2 TEXT, score1 INTEGER DEFAULT 0, score2 INTEGER DEFAULT 0, end_time INTEGER, channel_id TEXT, status TEXT DEFAULT 'pending')`);
   db.run(`CREATE TABLE IF NOT EXISTS revenge (loser_id TEXT PRIMARY KEY, last_defeated_by TEXT)`);
