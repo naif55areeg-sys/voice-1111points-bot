@@ -11,7 +11,7 @@ const client = new Client({
   ]
 });
 
-// قاعدة البيانات بالمسار الدائم في Railway
+// ================= قاعدة البيانات (المسار الدائم) =================
 const db = new sqlite3.Database('/data/voice.db');
 
 db.serialize(() => {
@@ -19,7 +19,7 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`);
 });
 
-// ================= أدوات التنسيق والبيانات =================
+// ================= أدوات التنسيق =================
 function formatTime(ms) {
   const isNegative = ms < 0;
   const absMs = Math.abs(ms);
@@ -84,20 +84,16 @@ async function sendTop() {
   setConfig("topMessageId", newMsg.id);
 }
 
-// ================= إضافة/نقص وقت يدوي (تم التحديث لدعم خيار الكل) =================
+// ================= إضافة/نقص وقت =================
 function modifyTime(userId, type, minutes, isAddition = true) {
   const ms = minutes * 60 * 1000;
   const operator = isAddition ? '+' : '-';
   db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [userId]);
 
   if (type === 'all') {
-    db.run(`UPDATE users SET total = total ${operator} ?, weekly = weekly ${operator} ?, monthly = monthly ${operator} ? WHERE id = ?`, [ms, ms, ms, userId], () => {
-      sendTop();
-    });
+    db.run(`UPDATE users SET total = total ${operator} ?, weekly = weekly ${operator} ?, monthly = monthly ${operator} ? WHERE id = ?`, [ms, ms, ms, userId], () => sendTop());
   } else {
-    db.run(`UPDATE users SET ${type} = ${type} ${operator} ? WHERE id = ?`, [ms, userId], () => {
-      sendTop();
-    });
+    db.run(`UPDATE users SET ${type} = ${type} ${operator} ? WHERE id = ?`, [ms, userId], () => sendTop());
   }
 }
 
@@ -136,77 +132,67 @@ client.on('interactionCreate', async interaction => {
   const owners = (process.env.OWNER_IDS || "").split(',').map(id => id.trim());
   const multiUsers = (process.env.MULTI_USERS || "").split(',').map(id => id.trim());
 
+  // أمر الفحص (جديد لضمان الأمان)
+  if (interaction.commandName === 'check_path') {
+    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
+    return interaction.reply({ 
+      content: `📂 مسار التخزين: \`${db.filename}\`\n${db.filename.startsWith('/data/') ? "✅ وضعك سليم (Volume)" : "⚠️ خطر (ذاكرة مؤقتة)"}`, 
+      ephemeral: true 
+    });
+  }
+
   if (interaction.commandName === 'addtime') {
     if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
-    const user = interaction.options.getUser('user');
-    const type = interaction.options.getString('type');
-    const minutes = interaction.options.getInteger('minutes');
-    modifyTime(user.id, type, minutes, true);
-    return interaction.reply({ content: `✅ تمت إضافة ${minutes} دقيقة (${type}) لـ ${user.tag}`, ephemeral: true });
+    modifyTime(interaction.options.getUser('user').id, interaction.options.getString('type'), interaction.options.getInteger('minutes'), true);
+    return interaction.reply({ content: "✅ تمت الإضافة", ephemeral: true });
   }
 
   if (interaction.commandName === 'removetime') {
     if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
-    const user = interaction.options.getUser('user');
-    const type = interaction.options.getString('type');
-    const minutes = interaction.options.getInteger('minutes');
-    modifyTime(user.id, type, minutes, false);
-    return interaction.reply({ content: `📉 تم خصم ${minutes} دقيقة (${type}) من ${user.tag}`, ephemeral: true });
+    modifyTime(interaction.options.getUser('user').id, interaction.options.getString('type'), interaction.options.getInteger('minutes'), false);
+    return interaction.reply({ content: "📉 تم الخصم", ephemeral: true });
   }
 
   if (interaction.commandName === 'rank') {
     db.get('SELECT * FROM users WHERE id = ?', [interaction.user.id], (err, row) => {
-      if (!row) return interaction.reply({ content: "❌ لا توجد بيانات لك بعد.", ephemeral: true });
-      interaction.reply({ content: `⏱️ مجموع وقتك الكلي: **${formatTime(row.total)}**`, ephemeral: true });
+      if (!row) return interaction.reply({ content: "❌ لا بيانات.", ephemeral: true });
+      interaction.reply({ content: `⏱️ مجموع وقتك: **${formatTime(row.total)}**`, ephemeral: true });
     });
   }
 
   if (interaction.commandName === 'multiplier') {
-    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
+    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا صلاحية", ephemeral: true });
     multiplierActive = true; mentionSent = false;
-    await interaction.reply({ content: "✅ تم تفعيل المضاعفة", ephemeral: true });
+    await interaction.reply({ content: "✅ فعلت المضاعفة", ephemeral: true });
     sendTop();
   }
 
   if (interaction.commandName === 'stopmultiplier') {
-    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا تملك صلاحية", ephemeral: true });
+    if (!multiUsers.includes(interaction.user.id)) return interaction.reply({ content: "❌ لا صلاحية", ephemeral: true });
     multiplierActive = false;
-    await interaction.reply({ content: "✅ تم إيقاف المضاعفة", ephemeral: true });
+    await interaction.reply({ content: "✅ أوقفت المضاعفة", ephemeral: true });
     sendTop();
   }
 
   if (interaction.commandName === 'test_honor') {
-    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌ للأونر فقط", ephemeral: true });
+    if (!owners.includes(interaction.user.id)) return interaction.reply({ content: "❌", ephemeral: true });
     await sendHonorRoll('weekly');
     await sendHonorRoll('monthly');
-    await interaction.reply({ content: "✅ تم تحديث لوحات الشرف.", ephemeral: true });
+    await interaction.reply({ content: "✅ حدثت لوحات الشرف.", ephemeral: true });
   }
 });
 
 client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  
-  // الخيارات المتاحة في الأوامر (تم إضافة خيار الكل هنا)
-  const choices = [
-    { name: 'الكل (كلي + شهري + أسبوعي)', value: 'all' },
-    { name: 'التوب الكلي فقط', value: 'total' }, 
-    { name: 'التوب الأسبوعي فقط', value: 'weekly' }, 
-    { name: 'التوب الشهري فقط', value: 'monthly' }
-  ];
-  
+  console.log(`Ready: ${client.user.tag}`);
+  const choices = [{ name: 'الكل', value: 'all' }, { name: 'كلي', value: 'total' }, { name: 'أسبوعي', value: 'weekly' }, { name: 'شهري', value: 'monthly' }];
   const commands = [
     new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك'),
+    new SlashCommandBuilder().setName('check_path').setDescription('فحص التخزين'),
     new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل المضاعفة'),
     new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف المضاعفة'),
     new SlashCommandBuilder().setName('test_honor').setDescription('تجربة لوحة الشرف'),
-    new SlashCommandBuilder().setName('addtime').setDescription('زيادة وقت لشخص')
-      .addUserOption(o => o.setName('user').setDescription('الشخص').setRequired(true))
-      .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true).addChoices(...choices))
-      .addIntegerOption(o => o.setName('minutes').setDescription('الدقائق').setRequired(true)),
-    new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت من شخص')
-      .addUserOption(o => o.setName('user').setDescription('الشخص').setRequired(true))
-      .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true).addChoices(...choices))
-      .addIntegerOption(o => o.setName('minutes').setDescription('الدقائق').setRequired(true))
+    new SlashCommandBuilder().setName('addtime').setDescription('زيادة وقت').addUserOption(o => o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o => o.setName('type').setRequired(true).addChoices(...choices).setDescription('النوع')).addIntegerOption(o => o.setName('minutes').setRequired(true).setDescription('الدقائق')),
+    new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت').addUserOption(o => o.setName('user').setRequired(true).setDescription('العضو')).addStringOption(o => o.setName('type').setRequired(true).addChoices(...choices).setDescription('النوع')).addIntegerOption(o => o.setName('minutes').setRequired(true).setDescription('الدقائق'))
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -214,13 +200,12 @@ client.once('ready', async () => {
   sendTop();
 });
 
-// ================= نظام الاحتساب =================
+// ================= نظام الاحتساب والجدولة =================
 setInterval(async () => {
   const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
   if (!guild) return;
   const voiceStates = guild.voiceStates.cache;
   let increment = 60000 * (multiplierActive ? multiplierValue : 1);
-
   voiceStates.forEach(vs => {
     if (!vs.channelId || vs.member.user.bot) return;
     db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [vs.id]);
