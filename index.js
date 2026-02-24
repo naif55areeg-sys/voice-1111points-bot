@@ -194,28 +194,29 @@ client.on('interactionCreate', async interaction => {
                 thumbnail: {
                     url: target.displayAvatarURL({ dynamic: true }),
                 },
-                fields: [
-                    {
-                        name: '⏳ الوقت الإجمالي',
-                        value: `\`${Math.floor(total / 60)} ساعة و ${total % 60} دقيقة\``,
-                        inline: false,
-                    },
-                    {
-                        name: '📅 هذا الشهر',
-                        value: `\`${Math.floor(monthly / 60)} س\` و \`${monthly % 60} د\``,
-                        inline: true,
-                    },
-                    {
-                        name: '🗓️ هذا الأسبوع',
-                        value: `\`${Math.floor(weekly / 60)} س\` و \`${weekly % 60} د\``,
-                        inline: true,
-                    },
-                    {
-                        name: '🔥 سلسلة الانتصارات',
-                        value: `\`${streak}\` فوز متتالي`,
-                        inline: false,
-                    },
-                ],
+               fields: [
+                {
+                    name: '⏳ الوقت الإجمالي',
+                    // إذا كان الرقم بالثواني، نقسم على 3600 للساعات
+                    value: `\`${Math.floor(total / 60)} ساعة و ${total % 60} دقيقة\``,
+                    inline: false,
+                },
+                {
+                    name: '📅 هذا الشهر',
+                    value: `\`${Math.floor(monthly / 60)}\` س و \`${monthly % 60}\` د`,
+                    inline: true,
+                },
+                {
+                    name: '🗓️ هذا الأسبوع',
+                    value: `\`${Math.floor(weekly / 60)}\` س و \`${weekly % 60}\` د`,
+                    inline: true,
+                },
+                {
+                    name: '🔥 سلسلة الانتصارات',
+                    value: `\`${streak}\` فوز متتالي`,
+                    inline: false,
+                },
+            ],
                 footer: {
                     text: `طلب بواسطة: ${interaction.user.tag}`,
                     icon_url: interaction.user.displayAvatarURL(),
