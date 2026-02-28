@@ -15,23 +15,10 @@ const client = new Client({
 const db = new sqlite3.Database('/data/voice.db');
 
 db.serialize(() => {
-  // 1. إنشاء الجدول الأساسي لو مو موجود (بدون العمود الجديد هنا)
   db.run(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, total INTEGER DEFAULT 0, weekly INTEGER DEFAULT 0, monthly INTEGER DEFAULT 0)`);
-  
-  // 2. تحديث الجدول القديم وإضافة عمود win_streak إذا كان ناقص
   db.run(`ALTER TABLE users ADD COLUMN win_streak INTEGER DEFAULT 0`, (err) => {
-    if (err) {
-      if (err.message.includes("duplicate column name")) {
-        // إذا العمود موجود أصلاً، ما يحتاج يسوي شيء
-      } else {
-        console.error("Error updating table:", err.message);
-      }
-    } else {
-      console.log("Column win_streak added successfully! ✅");
-    }
+    if (err && !err.message.includes("duplicate column name")) console.error("Error updating table:", err.message);
   });
-
-  // 3. إنشاء بقية الجداول الجديدة
   db.run(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`);
   db.run(`CREATE TABLE IF NOT EXISTS duels (id INTEGER PRIMARY KEY AUTOINCREMENT, user1 TEXT, user2 TEXT, score1 INTEGER DEFAULT 0, score2 INTEGER DEFAULT 0, end_time INTEGER, channel_id TEXT, status TEXT DEFAULT 'pending')`);
   db.run(`CREATE TABLE IF NOT EXISTS revenge (loser_id TEXT PRIMARY KEY, last_defeated_by TEXT)`);
@@ -175,49 +162,29 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: "✅ أوقفت المضاعفة", ephemeral: true });
       sendTop();
     }
-  if (interaction.commandName === 'rank') {
-        const target = interaction.options.getUser('user') || interaction.user;
+    if (interaction.commandName === 'rank') {
+      const target = interaction.options.getUser('user') || interaction.user;
+      db.get(`SELECT total, weekly, monthly, win_streak FROM users WHERE id = ?`, [target.id], (err, row) => {
+        if (err) return console.error(err.message);
+        const total = row ? row.total : 0;
+        const weekly = row ? row.weekly : 0;
+        const monthly = row ? row.monthly : 0;
+        const streak = row ? row.win_streak || 0 : 0;
 
-        db.get(`SELECT total, weekly, monthly, win_streak FROM users WHERE id = ?`, [target.id], (err, row) => {
-            if (err) return console.error(err.message);
-
-            const total = row ? row.total : 0;
-            const weekly = row ? row.weekly : 0;
-            const monthly = row ? row.monthly : 0;
-            const streak = row ? row.win_streak || 0 : 0;
-
-            const rankEmbed = {
-                color: 0x5865F2,
-                title: `📊 إحصائيات الصوت | ${target.username}`,
-                thumbnail: { url: target.displayAvatarURL({ dynamic: true }) },
-                fields: [
-                    { 
-                        name: '⏳ الوقت الإجمالي', 
-                        value: `\`${formatTime(total)}\``, // هنا استخدمنا الحسبة الصح
-                        inline: false 
-                    },
-                    { 
-                        name: '📅 هذا الشهر', 
-                        value: `\`${formatTime(monthly)}\``, 
-                        inline: true 
-                    },
-                    { 
-                        name: '🗓️ هذا الأسبوع', 
-                        value: `\`${formatTime(weekly)}\``, 
-                        inline: true 
-                    },
-                    { 
-                        name: '🔥 سلسلة الانتصارات', 
-                        value: `\`${streak}\` فوز متتالي`, 
-                        inline: false 
-                    },
-                ],
-                footer: { text: `طلب بواسطة: ${interaction.user.tag}`, icon_url: interaction.user.displayAvatarURL() },
-                timestamp: new Date(),
-            };
-
-            interaction.reply({ embeds: [rankEmbed] });
-        });
+        const rankEmbed = new EmbedBuilder()
+          .setColor(0x5865F2)
+          .setTitle(`📊 إحصائيات الصوت | ${target.username}`)
+          .setThumbnail(target.displayAvatarURL({ dynamic: true }))
+          .addFields(
+            { name: '⏳ الوقت الإجمالي', value: `\`${formatTime(total)}\``, inline: false },
+            { name: '📅 هذا الشهر', value: `\`${formatTime(monthly)}\``, inline: true },
+            { name: '🗓️ هذا الأسبوع', value: `\`${formatTime(weekly)}\``, inline: true },
+            { name: '🔥 سلسلة الانتصارات', value: `\`${streak}\` فوز متتالي`, inline: false },
+          )
+          .setFooter({ text: `طلب بواسطة: ${interaction.user.tag}`, icon_url: interaction.user.displayAvatarURL() })
+          .setTimestamp();
+        interaction.reply({ embeds: [rankEmbed] });
+      });
     }
     if (interaction.commandName === 'duel') {
       const target = interaction.options.getUser('user');
@@ -235,7 +202,20 @@ client.on('interactionCreate', async interaction => {
     if (interaction.customId.startsWith('accept_')) {
       const [_, u1, u2, hours] = interaction.customId.split('_');
       if (interaction.user.id !== u2) return interaction.reply({ content: "التحدي ليس لك!", ephemeral: true });
+      
       const end = Date.now() + (parseInt(hours) * 3600000);
+      
+      // تغيير اسم الروم عند القبول
+      try {
+        const user1 = await client.users.fetch(u1).catch(() => ({ username: 'Unknown' }));
+        const user2 = interaction.user;
+        const duelVoiceId = process.env.DUEL_VOICE_CH_ID;
+        const duelChannel = await interaction.guild.channels.fetch(duelVoiceId).catch(() => null);
+        if (duelChannel) {
+          await duelChannel.setName(`⚔️ ${user1.username} VS ${user2.username}`).catch(() => null);
+        }
+      } catch (e) { console.error(e); }
+
       db.run(`INSERT INTO duels (user1, user2, end_time, channel_id, status) VALUES (?, ?, ?, ?, 'active')`, [u1, u2, end, interaction.channelId]);
       await interaction.update({ content: `✅ بدأ التحدي! ينتهي <t:${Math.floor(end/1000)}:R>`, embeds: [], components: [] });
     }
@@ -254,26 +234,36 @@ setInterval(async () => {
   let increment = 60000 * (multiplierActive ? multiplierValue : 1);
   guild.voiceStates.cache.forEach(vs => {
     if (!vs.channelId || vs.member.user.bot) return;
-    db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [vs.id]);
-    db.run(`UPDATE users SET total=total+?, weekly=weekly+?, monthly=monthly+? WHERE id=?`, [increment, increment, increment, vs.id]);
-    db.run(`UPDATE duels SET score1=score1+? WHERE user1=? AND status='active'`, [increment, vs.id]);
-    db.run(`UPDATE duels SET score2=score2+? WHERE user2=? AND status='active'`, [increment, vs.id]);
+    const userId = vs.id;
+    db.serialize(() => {
+      db.run(`INSERT OR IGNORE INTO users(id) VALUES(?)`, [userId]);
+      db.run(`UPDATE users SET total=total+?, weekly=weekly+?, monthly=monthly+? WHERE id=?`, [increment, increment, increment, userId]);
+      db.run(`UPDATE duels SET score1=score1+? WHERE user1=? AND status='active'`, [increment, userId]);
+      db.run(`UPDATE duels SET score2=score2+? WHERE user2=? AND status='active'`, [increment, userId]);
+    });
   });
 }, 60000);
 
 setInterval(() => {
   db.all(`SELECT * FROM duels WHERE status='active' AND end_time <= ?`, [Date.now()], async (err, rows) => {
-    if (!rows) return;
+    if (!rows || rows.length === 0) return;
     for (const d of rows) {
       const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
+      if (!guild) continue;
       const chan = await client.channels.fetch(d.channel_id).catch(() => null);
-      if (!chan || !guild) continue;
+      
+      // إعادة اسم الروم للأصل عند انتهاء أي تحدي
+      const duelVoiceId = process.env.DUEL_VOICE_CH_ID;
+      const duelChannel = await guild.channels.fetch(duelVoiceId).catch(() => null);
+      if (duelChannel) {
+     await duelChannel.setName('⚔️ 1v1 ⚔️').catch(() => null);استبدل بالاسم الأصلي
+      }
 
       let winId = d.score1 > d.score2 ? d.user1 : (d.score2 > d.score1 ? d.user2 : null);
       let losId = winId === d.user1 ? d.user2 : d.user1;
       const roleId = process.env.LOSER_ROLE_ID;
 
-      if (winId) {
+      if (winId && chan) {
         db.get(`SELECT last_defeated_by FROM revenge WHERE loser_id=?`, [winId], async (e, r) => {
           let revText = (r && r.last_defeated_by === losId) ? `\n\n**🔥 رديت ثاري ياهطف <@${losId}>** 🤡` : "";
           db.run(`INSERT OR REPLACE INTO revenge (loser_id, last_defeated_by) VALUES (?, ?)`, [losId, winId]);
@@ -288,7 +278,9 @@ setInterval(() => {
           chan.send({ content: revText ? `<@${losId}> ابللللع!` : `<@${losId}> هاردلك..`, embeds: [new EmbedBuilder().setTitle("🏆 نتيجة التحدي").setDescription(`الفائز: <@${winId}>\nالخاسر: <@${losId}> 🤡${revText}`).setColor("#f1c40f")] });
           setTimeout(async () => { const m = await guild.members.fetch(losId).catch(() => null); if (m && roleId) await m.roles.remove(roleId).catch(() => null); }, 24*60*60*1000);
         });
-      } else { chan.send("⚖️ تعادل التحدي!"); }
+      } else if (chan) {
+        chan.send("⚖️ تعادل التحدي!");
+      }
       db.run(`UPDATE duels SET status='finished' WHERE id=?`, [d.id]);
     }
   });
@@ -299,10 +291,10 @@ setInterval(() => sendTop(), 60000);
 cron.schedule('0 0 * * 0', async () => { await sendHonorRoll('weekly'); db.run(`UPDATE users SET weekly = 0`); });
 cron.schedule('0 0 1 * *', async () => { await sendHonorRoll('monthly'); db.run(`UPDATE users SET monthly = 0`); });
 
-client.once('clientReady', async () => {
+client.once('ready', async () => {
   const choices = [{ name: 'الكل', value: 'all' }, { name: 'كلي', value: 'total' }, { name: 'أسبوعي', value: 'weekly' }, { name: 'شهري', value: 'monthly' }];
   const commands = [
-    new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك الشخصي'),
+    new SlashCommandBuilder().setName('rank').setDescription('عرض وقتك الشخصي').addUserOption(o=>o.setName('user').setDescription('اختر العضو')),
     new SlashCommandBuilder().setName('check_path').setDescription('فحص تخزين البيانات'),
     new SlashCommandBuilder().setName('multiplier').setDescription('تفعيل مضاعفة الوقت'),
     new SlashCommandBuilder().setName('stopmultiplier').setDescription('إيقاف مضاعفة الوقت'),
@@ -311,8 +303,11 @@ client.once('clientReady', async () => {
     new SlashCommandBuilder().setName('addtime').setDescription('إضافة وقت لعضو').addUserOption(o=>o.setName('user').setDescription('اختر العضو').setRequired(true)).addStringOption(o=>o.setName('type').setDescription('نوع التوب').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setDescription('الدقائق').setRequired(true)),
     new SlashCommandBuilder().setName('removetime').setDescription('خصم وقت من عضو').addUserOption(o=>o.setName('user').setDescription('اختر العضو').setRequired(true)).addStringOption(o=>o.setName('type').setDescription('نوع التوب').setRequired(true).addChoices(...choices)).addIntegerOption(o=>o.setName('minutes').setDescription('الدقائق').setRequired(true))
   ];
-  await new REST({version:'10'}).setToken(process.env.TOKEN).put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), {body:commands});
-  console.log("Commands Loaded Successfully ✅"); sendTop();
+  try {
+    await new REST({version:'10'}).setToken(process.env.TOKEN).put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), {body:commands});
+    console.log("Commands Loaded Successfully ✅");
+    sendTop();
+  } catch (err) { console.error(err); }
 });
 
 client.login(process.env.TOKEN);
