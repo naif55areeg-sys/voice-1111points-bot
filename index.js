@@ -256,7 +256,7 @@ setInterval(() => {
       const duelVoiceId = process.env.DUEL_VOICE_CH_ID;
       const duelChannel = await guild.channels.fetch(duelVoiceId).catch(() => null);
       if (duelChannel) {
-     await duelChannel.setName('⚔️ 1v1 ⚔️').catch(() => null);استبدل بالاسم الأصلي
+      await duelChannel.setName('⚔️ 1v1 ⚔️').catch(() => null); // استبدل بالاسم الأصلي 
       }
 
       let winId = d.score1 > d.score2 ? d.user1 : (d.score2 > d.score1 ? d.user2 : null);
