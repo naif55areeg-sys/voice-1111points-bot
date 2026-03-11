@@ -1,12 +1,19 @@
+require('dotenv').config();
+const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const sqlite3 = require('sqlite3').verbose();
+const cron = require('node-cron');
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,    // <--- إضافة: عشان يسمع إن فيه رسالة وصلت
-    GatewayIntentBits.MessageContent    // <--- إضافة: عشان يقدر يقرأ وش مكتوب داخلها
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent 
   ]
 });
+
+// وبعدها يكمل باقي كود قاعدة البيانات والأنظمة...
 
 // ================= قاعدة البيانات =================
 const db = new sqlite3.Database('/data/voice.db');
