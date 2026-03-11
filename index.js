@@ -233,27 +233,36 @@ client.on('interactionCreate', async interaction => {
 
 // ================= نظام القصيد الكشخة =================
 client.on('messageCreate', async message => {
-  // التأكد أن الرسالة ليست من بوت وأنها في روم القصيد المحدد
+  // 1. التأكد أن الرسالة ليست من بوت
   if (message.author.bot) return;
-  if (message.channel.id !== process.env.POETRY_CHANNEL_ID) return;
 
-  const poetryEmbed = new EmbedBuilder()
-    .setAuthor({ 
-      name: `🖋️قـصـيد: ${message.author.username}`,
-      iconURL: message.author.displayAvatarURL({ dynamic: true }) 
-    })
-    .setDescription(`${message.content}`)
-    .setColor("#2b2d31") // لون أسود فخم (Dark Theme)
-    .setThumbnail('https://media.discordapp.net/attachments/1420578206863327276/1481112912780329100/pngegg.png')
-    .setFooter({ text: '⚖️┃سـجالات-شـعرية', iconURL: message.guild.iconURL() })
-    .setTimestamp();
+  // 2. تحديد آيدي الروم يدوياً لضمان العمل (بدل الاعتماد على Variable ريلوي)
+  const poetryChannelId = '1481115797496791040';
 
-  // حذف رسالة العضو الأصلية عشان يبقى الروم كله إمبدات
-  try {
-    await message.delete();
-    await message.channel.send({ embeds: [poetryEmbed] });
-  } catch (err) {
-    console.error("خطأ في نظام القصيد:", err);
+  if (message.channel.id === poetryChannelId) {
+    console.log(`✅ رصدت قصيدة من ${message.author.username}`); // هذا بيظهر لك في ريلوي
+
+    const poetryEmbed = new EmbedBuilder()
+      .setAuthor({ 
+        name: `🖋️ قـصـيد: ${message.author.username}`,
+        iconURL: message.author.displayAvatarURL({ dynamic: true }) 
+      })
+      .setDescription(`${message.content}`)
+      .setColor("#2b2d31") 
+      .setThumbnail('https://media.discordapp.net/attachments/1420578206863327276/1481112912780329100/pngegg.png')
+      .setFooter({ text: '⚖️┃سـجالات-شـعرية', iconURL: message.guild.iconURL() })
+      .setTimestamp();
+
+    try {
+      // حذف الرسالة الأصلية (تأكد أن رتبة البوت فوقك أو عنده Manage Messages)
+      await message.delete().catch(() => console.log("⚠️ فشل الحذف - غالباً رتبة البوت تحتك أو ينقصه Manage Messages"));
+      
+      // إرسال الإمبد
+      await message.channel.send({ embeds: [poetryEmbed] });
+      console.log("✨ تم إرسال الإمبد بنجاح");
+    } catch (err) {
+      console.error("❌ خطأ في الإرسال:", err);
+    }
   }
 });
 
