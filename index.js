@@ -250,7 +250,7 @@ client.on('messageCreate', async message => {
       .setDescription(`${message.content}`)
       .setColor("#4169E1") 
       .setThumbnail('https://media.discordapp.net/attachments/1420578206863327276/1481112912780329100/pngegg.png')
-      .setFooter({ text: '⚖️┃سـجالات-شـعرية', iconURL: message.guild.iconURL() })
+      .setFooter({ text: '⚖️┃سجلات-شـعرية', iconURL: message.guild.iconURL() })
       .setTimestamp();
 
     try {
