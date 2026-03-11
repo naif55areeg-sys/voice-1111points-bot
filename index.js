@@ -248,7 +248,7 @@ client.on('messageCreate', async message => {
         iconURL: message.author.displayAvatarURL({ dynamic: true }) 
       })
       .setDescription(`${message.content}`)
-      .setColor("#2b2d31") 
+      .setColor("#4169E1") 
       .setThumbnail('https://media.discordapp.net/attachments/1420578206863327276/1481112912780329100/pngegg.png')
       .setFooter({ text: '⚖️┃سـجالات-شـعرية', iconURL: message.guild.iconURL() })
       .setTimestamp();
